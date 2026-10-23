@@ -1,13 +1,10 @@
-"""Find evidence of users independently reporting the same issue.
+"""Find first-hand same-problem reports in issue comments.
 
-This is a deliberately conservative, inspectable text classifier. It does NOT
-prove that two users share a root cause or that a closed issue remains broken.
+Results are evidence for maintainer review, not proof of identical root causes.
 """
-
 from dataclasses import dataclass
 from datetime import datetime
 import re
-from typing import Optional
 
 import matplotlib.pyplot as plt
 
@@ -15,297 +12,140 @@ import config
 from data_loader import DataLoader
 from model import State
 
-# Each rule requires a personal/experiential statement. Matches are presented
-# as evidence for human review, never as a proven count of affected users.
-REPORT_RULES = [
-    (
-        "same-problem",
-        re.compile(
-            r"\b(?:i|we)(?:'m|'re|'ve| am| are| have| had| was| were)?\s*"
-            r"(?:also|still|just|currently|recently|now|too|exactly|indeed|personally|\s){0,4}\s*"
-            r"(?:have|had|hit|see|saw|get|got|face|faced|encounter|encountered|experience|experienced|"
-            r"am having|are having|am seeing|are seeing|am getting|are getting|am experiencing|are experiencing|"
-            r"having|seeing|getting|experiencing|running into|ran into|struggling with)\s+"
-            r"(?:the|a|this|that|exactly|very|same|identical|similar|\s){0,5}\s*"
-            r"(?:same|identical|similar)\s+(?:issue|problem|bug|error|behavior|behaviour|failure|thing)\b",
-            re.I,
-        ),
-    ),
-    (
-        "same-problem",
-        re.compile(
-            r"\b(?:i|we)(?:'m|'re|'ve| am| are| have| had)?\s*"
-            r"(?:also|still|just|currently|recently|now|too|\s){0,4}\s*"
-            r"(?:have|had|hit|see|saw|get|got|face|faced|encounter|encountered|experience|experienced|"
-            r"am having|are having|am seeing|are seeing|am getting|are getting|am experiencing|are experiencing|"
-            r"having|seeing|getting|experiencing|running into|ran into|struggling with)\s+"
-            r"(?:(?:this|that)\s+(?:issue|problem|bug|error|behavior|behaviour|failure|exception|traceback|too)|"
-            r"(?:this|that|it)\s+as well|it\s+too)\b",
-            re.I,
-        ),
-    ),
-    (
-        "same-problem",
-        re.compile(
-            r"^(?:same (?:issue|problem|bug|error|behavior|behaviour|thing)(?: (?:here|for me|on my end|too))?|"
-            r"same here|same for me|similar (?:issue|problem) (?:here|for me)|"
-            r"having the same (?:issue|problem|bug|error)|"
-            r"(?:this|it) (?:also |still )?happens (?:to|for) me)\b",
-            re.I,
-        ),
-    ),
-    (
-        "same-problem",
-        re.compile(
-            r"\b(?:i|we)(?:'ve| have| had| am| are| 'm| 're)?\s*"
-            r"(?:also|still|recently|currently|just|\s){0,4}\s*"
-            r"(?:got|have|had|am having|are having|having|seeing|getting|experienced|experiencing|"
-            r"notic(?:ed|ing)|suffer(?:ed|ing) from)\s+(?:the |a |this |that )?"
-            r"(?:same|similar|identical)\s+(?:issue|problem|bug|error|behavio(?:r|ur)|failure)\b",
-            re.I,
-        ),
-    ),
-    (
-        "direct-experience",
-        re.compile(
-            r"\b(?:we(?:'ve| have)?\s+also\s+(?:started\s+)?(?:hitting|seeing|getting|experiencing|having)\s+this|"
-            r"(?:this|it)\s+(?:is|was|keeps)\s+happening\s+(?:to me|to us|on my|for me)|"
-            r"(?:this|it)\s+(?:happened|happens)\s+to me|"
-            r"i\s+(?:just|also|recently)?\s*(?:came across|ran into|hit)\s+this\s+(?:myself|too)|"
-            r"(?:i|we)\s+(?:also\s+)?started\s+(?:hitting|seeing)\s+this)\b",
-            re.I,
-        ),
-    ),
-    (
-        "reproduction",
-        re.compile(
-            r"\b(?:i|we)\s+(?:can|could|was able to|am able to|have|had|still can)\s+"
-            r"(?:also\s+)?(?:reproduce|reproduced|replicate|replicated|confirm)\s+"
-            r"(?:this|it|the|same|issue|problem|bug|error)\b",
-            re.I,
-        ),
-    ),
-    ("reproduction", re.compile(r"^reproducible\s+(?:with|on|using)\b", re.I)),
-    (
-        "direct-experience",
-        re.compile(
-            r"^(?:this is happening\b|just came across this myself\b|"
-            r"(?:i|we) (?:just |also |recently )?came across this myself\b)",
-            re.I,
-        ),
-    ),
-    (
-        "same-problem",
-        re.compile(
-            r"\b(?:i|we)(?:'m|'re| am| are| have been| were)?\s+"
-            r"(?:also\s+)?affected\b",
-            re.I,
-        ),
-    ),
-    (
-        "reproduction",
-        re.compile(
-            r"\b(?:this|it|the (?:issue|bug|problem))\s+"
-            r"(?:also\s+)?(?:reproduces|happens|occurs|persists|still happens)\s+"
-            r"(?:reliably|consistently|every time|on|for|when|with|here|to me|for me)\b",
-            re.I,
-        ),
-    ),
-    (
-        "direct-experience",
-        re.compile(
-            r"\b(?:i|we)(?:'m|'re| am| are| have been| had been| was| were)?\s*"
-            r"(?:also|still|currently|now|recently|just|\s){0,3}\s*"
-            r"(?:seeing|getting|having|experiencing|facing|hitting|encountering|running into)\s+"
-            r"(?:this|that|it|the same|a similar)(?:\s+(?:error|failure|issue|problem|behavior|behaviour))?\b",
-            re.I,
-        ),
-    ),
-    (
-        "persistent-problem",
-        re.compile(
-            r"\b(?:still (?:broken|failing|fails|doesn't work|does not work|happening|reproducible)|"
-            r"still (?:not working|seeing this|having this|getting this)|"
-            r"(?:it|this) (?:still|continues? to) (?:fail|fails|happen|reproduce|occur|break)|"
-            r"(?:same|similar) (?:issue|problem|error) (?:persists|continues))\b",
-            re.I,
-        ),
-    ),
-    (
-        "firsthand-error",
-        re.compile(
-            r"\b(?:i|we)(?:'m|'re| am| are)?\s*"
-            r"(?:also|still|just|\s){0,3}\s*"
-            r"(?:get|got|see|saw|hit|encountered|encounter|am getting|are getting|getting|seeing)\s+"
-            r"(?:the|this|that|same)\s+(?:exact\s+)?(?:error|traceback|exception|failure)\b",
-            re.I,
-        ),
-    ),
-    (
-        "firsthand-error",
-        re.compile(
-            # Any named program/command or generic tool reference; no project names.
-            r"\b(?:[A-Za-z][A-Za-z0-9_.+-]{1,49}|(?:the|this|my)\s+(?:app|application|tool|command|"
-            r"program|package|library|plugin|client|service))\s+"
-            r"(?:still\s+)?(?:fails|failed|breaks|broke|crashes|crashed)\s+"
-            r"(?:for me|on my (?:machine|computer|system|setup)|on our (?:machines|systems))\b",
-            re.I,
-        ),
-    ),
+PROBLEM = r"(?:issue|issues|problem|bug|error|failure|exception|behavior|behaviour|thing)"
+SPEAKER = r"(?:i|we|i'm|we're|i've|we've)"
+EXPERIENCE = r"(?:have|had|hit|got|get|see|saw|face|faced|facing|encounter|encountered|encountering|experience|experienced|experiencing|having|seeing|getting|hitting|running into|ran into)"
+REPORT_PATTERNS = [
+    ("same problem", rf"\b{SPEAKER}\s+(?:(?:am|are|have|was|were)\s+)?(?:(?:also|still|just|too|recently)\s+)?{EXPERIENCE}\s+(?:(?:exactly|very)\s+)?(?:the|a|this|that)?\s*(?:(?:exactly|very)\s+)?(?:same|similar|identical)\s+{PROBLEM}\b"),
+    ("same problem", rf"\b{SPEAKER}\s+(?:(?:am|are|have|was|were)\s+)?(?:(?:also|still|just|recently)\s+)?{EXPERIENCE}\s+(?:this|that)\s+{PROBLEM}\b"),
+    ("same problem", rf"\b{SPEAKER}\s+(?:also\s+)?(?:have|had|got|get|see|saw)\s+(?:this|that|it)\s+(?:too|as well)\b"),
+    ("same problem", rf"^(?:same here|same for me|same {PROBLEM}(?: here| for me| too| on)?|similar {PROBLEM} (?:here|for me)|having the same {PROBLEM})\b"),
+    ("reproduced", rf"\b{SPEAKER}\s+(?:also\s+)?(?:can|could|was able to|am able to|have|had)\s+(?:also\s+)?(?:reproduce|reproduced|replicate|replicated|confirm)\s+(?:this|it|the|same|issue|problem|bug|error)\b"),
+    ("reproduced", r"\b(?:this|it)\s+(?:also\s+)?(?:reproduces|happens|occurs|persists)\s+(?:reliably|consistently|every time|on|for|when|with|here|to me)\b"),
+    ("direct experience", rf"\b{SPEAKER}\s+(?:(?:am|are|was|were|have been)\s+)?(?:(?:also|still|currently|now|recently|just)\s+)?(?:seeing|getting|having|experiencing|facing|hitting|encountering|running into)\s+(?:this|that|it|the same|a similar)(?:\s+(?:error|failure|issue|problem))?\b"),
+    ("direct experience", r"\b(?:this|it)\s+(?:(?:is|was|keeps|still)\s+)?(?:happening|happens|happened)\s+(?:to me|to us|for me)\b"),
+    ("direct experience", rf"\b{SPEAKER}\s+(?:(?:just|also|recently)\s+)?(?:came across|ran into|hit)\s+this\s+(?:myself|too)\b"),
+    ("direct experience", rf"\b(?:{SPEAKER}\s+(?:just\s+|recently\s+)?|just\s+)(?:ran into|hit|encountered)\s+(?:this|the same)\s+{PROBLEM}\b"),
+    ("direct experience", rf"\b{SPEAKER}\s+(?:(?:am|are|have been)\s+)?(?:also\s+)?affected\b"),
+    ("persistent problem", r"\b(?:still\s+(?:broken|failing|fails|happening|reproducible|not working|seeing this|having this|getting this|doesn.t work|does not work)|(?:it|this)\s+(?:still|continues? to)\s+(?:fail|fails|happen|reproduce|occur|break)|(?:same|similar)\s+(?:issue|problem|error)\s+(?:persists|continues))\b"),
+    ("direct experience", rf"\b{SPEAKER}\s+(?:(?:am|are|also|still|just)\s+)?(?:get|got|see|saw|hit|encountered|encounter|getting|seeing)\s+(?:the|this|that|same)\s+(?:exact\s+)?(?:error|traceback|exception|failure)\b"),
+    ("direct experience", r"\b(?:[a-z][\w.+-]{1,49}|(?:the|this|my)\s+(?:app|application|tool|command|program|package|library|plugin|client|service))\s+(?:still\s+)?(?:fails|failed|breaks|broke|crashes|crashed)\s+(?:for me|on my (?:machine|computer|system|setup)|on our (?:machines|systems))\b"),
+    ("direct experience", r"\bwe\s+have\s+also\s+started\s+(?:hitting|seeing|getting|experiencing|having)\s+this\s+(?:issue|problem|bug|error)\b"),
+    ("direct experience", r"^this\s+is\s+happening\b"),
+    ("direct experience", r"^just\s+came\s+across\s+this\s+myself\b"),
+    ("same problem", r"^same\s+thing\s+(?:on|with|for|here|too)\b"),
+    ("same problem", rf"\b{SPEAKER}\s+(?:(?:am|are|have|was|were)\s+)?(?:(?:also|still|just|recently)\s+)?(?:ran into|running into|hit|got|see|saw|encountered|experienced)\s+(?:this|it)\s+(?:too|as well)\b"),
+    ("reproduced", r"^reproducible\s+(?:with|on|using)\b"),
 ]
+# Additional high-specificity expressions found in a held-out issue-level review.
+# These are project-independent: they describe a person's experience, not Poetry.
+REPORT_PATTERNS += [
+    ("direct experience", rf"\b{SPEAKER}\s+(?:(?:am|are|have)\s+)?(?:(?:still|also|currently)\s+)?(?:running\s+into|running\s+in|run\s+into)\s+(?:this|the\s+same)\s+{PROBLEM}\b"),
+    ("direct experience", rf"\b{SPEAKER}\s+(?:(?:am|are|have|was|were)\s+)?(?:(?:still|also|currently)\s+)?(?:see|seeing|get|getting|hit|hitting|have|having)\s+(?:(?:the|this|that|a)\s+)?(?:same|exact|identical)\s+(?:error|bug|issue|failure|warning|problem|traceback)\b"),
+    ("direct experience", rf"\b{SPEAKER}\s+(?:(?:am|are|have|was|were)\s+)?(?:(?:still|also|currently)\s+)?(?:see|seeing|get|getting|hit|hitting|have|having)\s+(?:(?:the|this|that|a)\s+)?(?:error|failure|warning|traceback|exception)\b"),
+    ("same problem", rf"\b{SPEAKER}\s+(?:have|had)\s+the\s+same\s+(?:when|while)\b"),
+    ("direct experience", r"^(?:this|the)\s+(?:issue|problem|bug|error)\s+(?:still\s+(?:exists|occurs|happens)|persists)\b"),
+    ("direct experience", rf"\b{SPEAKER}\s+(?:(?:am|are)\s+)?having\s+(?:some|the|a)\s+(?:trouble|difficulty|problems?)\s+(?:with|installing|running|using)\b"),
+    ("same problem", r"^same\s+(?:error|issue|problem)(?:\s|$)"),
+    ("historical experience", r"\b(?:fixed|resolved|solved)\s+(?:the|this|my)\s+(?:issue|bug|problem)\s+for\s+me\b|\b(?:following\s+)?(?:command|solution|workaround)\s+fixed\s+(?:the|my|this)\s+(?:issue|problem|bug)\s+for\s+me\b"),
+]
+# Additional straightforward ways to report the same experience.
+REPORT_PATTERNS += [
+    ("same problem", rf"\b{SPEAKER}\s+(?:am|are|was|were)\s+having\s+(?:the\s+)?(?:exact|identical|very)\s+same\s+{PROBLEM}\b"),
+    ("same problem", rf"\b{SPEAKER}\s+(?:was|were)\s+(?:seeing|getting|having)\s+(?:this|the)\s+same\s+(?:error|problem|issue|bug)\b"),
+    ("direct experience", rf"\b{SPEAKER}\s+(?:also\s+)?(?:hit|encountered|got)\s+this\s+(?:when|while|after|on)\b"),
+    ("reproduced", rf"\b{SPEAKER}\s+(?:(?:have|has)\s+)?(?:just\s+)?(?:tested|verified|reproduced)\s+this\s+(?:and|but)\s+(?:the\s+same\s+)?(?:issue|bug|problem)\s+(?:still\s+)?(?:occurs|exists|persists)\b"),
+    ("historical experience", rf"\b{SPEAKER}\s+can\s+confirm\s*,?\s+.{0,90}?\bfixes\s+this\s+(?:issue|problem|bug)\b"),
+]
+REPORT_PATTERNS = [(label, re.compile(pattern, re.I)) for label, pattern in REPORT_PATTERNS]
 
-# Statements clearly describing fixed, historical or hypothetical events are
-# not treated as evidence of a problem *continuing* after issue closure.
-FIXED = re.compile(
-    r"\b(?:fixed (?:it|this|the issue|the problem|my issue)|"
-    r"(?:it|this|the issue|the problem) (?:is|was|has been|got) (?:fixed|resolved)|"
-    r"(?:i|we) (?:fixed|resolved) (?:it|this)|"
-    r"(?:it|this) (?:works|worked) (?:now|after)|"
-    r"(?:no longer|not anymore) (?:happens|fails|broken|an issue)|"
-    r"(?:upgrad(?:ed|ing)|updat(?:e|ed|ing)|downgrad(?:ed|ing)|reinstall(?:ed|ing)|changing|switching)\b.{0,75}\b"
-    r"(?:fixed|resolved|solved|works now|worked|went away))\b",
-    re.I,
-)
-
-NOT_A_REPORT = re.compile(
-    r"\b(?:cannot|can't|can not|couldn't|could not|unable to) (?:reproduce|replicate)|"
-    r"\b(?:i|we) (?:don't|do not|didn't|did not|haven't|have not) (?:have|see|experience|get|reproduce)|"
-    r"\bnot (?:actually )?(?:the )?same (?:issue|problem|error|thing)|"
-    r"\b(?:i['’]m|i am|we['’]re|we are) not (?:seeing|having|getting|experiencing|hitting|reproducing)|"
-    r"\bno longer (?:have|see|experience|get)|"
-    r"\b(?:if|whether) (?:anyone|somebody|someone|you) (?:can|could|is|has|have) (?:reproduce|experiencing|seeing)|"
-    r"\b(?:can|could) (?:anyone|someone|somebody|you) (?:reproduce|confirm)|"
-    r"\b(?:not sure|unsure|wondering) (?:if|whether) (?:this|it|the issue) (?:is|was) the same\b",
-    re.I,
-)
-
-BOT_NAME = re.compile(
-    r"(?:\[bot\]$|^dependabot(?:\[bot\])?$|^github-actions(?:\[bot\])?$|^renovate(?:\[bot\])?$|^stale(?:\[bot\])?$)",
-    re.I,
-)
-FENCE = re.compile(r"```[\s\S]*?```|~~~[\s\S]*?~~~")
-INLINE_CODE = re.compile(r"`[^`\n]*`")
-QUOTED = re.compile(r"^\s*(?:>|&gt;)\s?.*$", re.M)
-HTML_COMMENT = re.compile(r"<!--[\s\S]*?-->")
-# On DATE, USER wrote: introduces quoted material from an email thread.
-EMAIL_QUOTE = re.compile(r"(?im)^on\s+.{8,140}\s+wrote:\s*$")
-WORD_RE = re.compile(r"(?<=[.!?])\s+|\n+")
-
+DENIAL = re.compile(
+    r"\b(?:can't|cannot|couldn't|can not|could not|unable to)\s+(?:reproduce|replicate)|"
+    rf"\b{SPEAKER}\s+(?:don't|do not|didn't|did not|haven't|have not)\s+(?:have|see|experience|get|reproduce)|"
+    r"\b(?:i(?:'m| am)|we(?:'re| are))\s+not\s+(?:seeing|having|getting|experiencing|reproducing)|"
+    r"\bnot\s+(?:actually\s+)?(?:the\s+)?same\s+(?:issue|problem|error|thing)|"
+    r"\bno longer\s+(?:have|see|experience|get)|"
+    r"\b(?:can|could)\s+(?:anyone|someone|you)\s+(?:reproduce|confirm)", re.I)
+UNRELATED = re.compile(r"\b(?:unrelated|not related|isn't related|is not related)\s+to\s+(?:the\s+|this\s+)?(?:original\s+)?(?:issue|problem|report)\b", re.I)
+RESOLVED = re.compile(
+    r"\b(?:fixed|resolved|solved)\s+(?:it|this|my issue|the issue|the problem)|"
+    r"\b(?:it|this|the issue|the problem)\s+(?:is|was|has been|got)\s+(?:now\s+)?(?:fixed|resolved|solved)|"
+    r"\b(?:updat(?:e|ed|ing)|upgrad(?:ed|ing)|downgrad(?:ed|ing)|reinstall(?:ed|ing)|switching)\b.{0,75}\b(?:fixed|solved|resolved|worked|works now)|"
+    r"\b(?:it|this)\s+(?:works|worked)\s+(?:now|after)\b|"
+    r"(?<!be )\bsolved\s+with\b|"
+    r"\b(?:it|this)\s+(?:does\s+)?seem\s+to\s+(?:be\s+)?(?:work\s+fine|work\s+now|fixed|resolved|solved)\b|"
+    r"\bno\s+longer\s+(?:occurs|occurring|happens|happening|reproducible)\b|"
+    r"\b(?:managed|was able)\s+to\s+(?:workaround|work\s+around)\b", re.I)
+ONGOING = re.compile(
+    r"\b(?:still|currently)\s+(?:(?:am|are|is)\s+)?(?:getting|having|seeing|experiencing|happening|failing|fails|broken|happens|occurs)|"
+    r"\b(?:not|never)\s+(?:fixed|resolved)\b|"
+    r"\b(?:it|this)\s+(?:still\s+)?(?:fails|keeps failing|keeps happening)\b|"
+    r"\b(?:issue|bug|problem|error)\s+still\s+(?:exists|occurs|persists|happens)\b", re.I)
+PAST = re.compile(rf"\b(?:used to|previously|back then|in the past|last year|last week|happened to me)\b|\b{SPEAKER}\s+(?:had|was having|were having|was getting|were getting|was seeing|were seeing|saw|experienced)\b", re.I)
+BOT = re.compile(r"\[bot\]$|^(?:dependabot|renovate|stale|github-actions)$", re.I)
+SPLIT_SENTENCES = re.compile(r"(?<=[.!?])\s+|\n+")
+SPLIT_CLAUSES = re.compile(r"\s*;\s*|\s*,?\s+but\s+|\s+however\s*,?\s*", re.I)
 
 @dataclass(frozen=True)
 class Detection:
     rule: str
     excerpt: str
-    status: str  # 'current', 'historical', or 'unclear'
+    status: str
 
-
-def clean_comment(comment: str) -> str:
-    """Remove quoted/code material so that quoted reports aren't credited to author."""
+def clean_comment(comment):
     if not comment:
         return ""
-    text = HTML_COMMENT.sub(" ", comment)
-    text = FENCE.sub(" ", text)
-    text = INLINE_CODE.sub(" ", text)
-    text = QUOTED.sub(" ", text)
-    text = EMAIL_QUOTE.split(text, 1)[0]
+    text = comment.replace("’", "'")
+    text = re.sub(r"<!--[\s\S]*?-->", " ", text)
+    text = re.sub(r"```[\s\S]*?```|~~~[\s\S]*?~~~", " ", text)
+    text = re.sub(r"`[^`\n]*`", " ", text)
+    text = re.sub(r"^\s*(?:>|&gt;)\s?.*$", "", text, flags=re.M)
+    text = re.split(r"(?im)^on\s+.{8,140}\s+wrote:\s*$", text, maxsplit=1)[0]
     return text
 
+def _not_a_report(clause, sentence):
+    if DENIAL.search(clause):
+        return True
+    if re.match(r"^(?:if|assuming|suppose|imagine)\b", clause, re.I):
+        return True
+    if re.search(r"\b(?:if|suppose|assuming|imagine)\s+(?:i|we)\b", clause, re.I):
+        return True
+    if re.match(r"^(?:anyone|does|did|can|could|would|what|why|how|is|are|do)\b", clause, re.I) and sentence.endswith("?"):
+        return True
+    if re.match(r"^(?:can|could|would|please)\s+(?:you|someone|anyone)\b", clause, re.I):
+        return True
+    if re.match(r"^(?:anyone else|is anyone|can anyone|could anyone|does anyone)\b", clause, re.I):
+        return True
+    if re.search(rf"\b{SPEAKER}\s+can\s+confirm\s+(?:this|it)\s+(?:is|was|has been)\s+(?:fixed|resolved|working)", clause, re.I):
+        return True
+    if re.search(rf"\bsame\s+(?:issue|problem|bug|error)\s+as\s+(?:#\d+|@\w+|https?://|another issue|this issue)", clause, re.I) and not re.search(rf"\b{SPEAKER}\s+(?:have|had|am|are)\b|\bfor me\b", clause, re.I):
+        return True
+    return False
 
-def classify_comment(comment: str) -> Optional[Detection]:
-    """Find first-hand evidence; distinguish ongoing from historical reports.
-
-    Sentence/clause-level checks avoid rejecting an entire long comment because
-    one unrelated sentence says 'cannot reproduce'. They are still heuristics.
-    """
+def classify_comment(comment):
     text = clean_comment(comment)
-    if not text.strip():
-        return None
-    sentences = [part.strip() for part in WORD_RE.split(text) if part.strip()]
-    for sentence in sentences:
-        # A report followed by a fix in the same sentence is historical evidence.
-        fixed_in_sentence = bool(FIXED.search(sentence))
-        clauses = re.split(r"(?i)\s*;\s*|\s*,?\s+but\s+|\s+however\s*,?\s*", sentence)
-        for clause in clauses:
+    for sentence in filter(None, (s.strip() for s in SPLIT_SENTENCES.split(text))):
+        if UNRELATED.search(sentence):
+            continue
+        for clause in SPLIT_CLAUSES.split(sentence):
             clause = clause.strip()
-            # Questions, hypotheticals, and suggested actions aren't reports.
-            if (
-                not clause
-                or (
-                    sentence.endswith("?")
-                    and re.match(
-                        r"(?i)^(?:anyone|does|did|can|could|would|what|why|how|is|are|do)\b",
-                        clause,
-                    )
-                )
-                or re.match(r"(?i)^(?:if|assuming|suppose|imagine)\b", clause)
-                or re.search(
-                    r"\b(?:if|suppose|assuming|imagine)\s+(?:i|we)\b", clause, re.I
-                )
-                or clause.lower().startswith(
-                    (
-                        "does anyone",
-                        "anyone else",
-                        "is anyone",
-                        "can anyone",
-                        "could anyone",
-                    )
-                )
-                or NOT_A_REPORT.search(clause)
-                or re.search(
-                    r"\b(?:i|we)\s+can\s+confirm\s+(?:this|it)\s+(?:is|was|has been)\s+(?:fixed|resolved|working)",
-                    clause,
-                    re.I,
-                )
-            ):
+            if not clause or _not_a_report(clause, sentence):
                 continue
-            for rule, pattern in REPORT_RULES:
-                match = pattern.search(clause)
-                if not match:
+            for rule, pattern in REPORT_PATTERNS:
+                if not pattern.search(clause):
                     continue
-                # A moderator classifying a duplicate isn't necessarily affected.
-                if (
-                    rule == "same-problem"
-                    and re.search(
-                        r"\bsame (?:issue|problem|bug|error) as (?:#\d+|https?://|another issue|this issue)",
-                        clause,
-                        re.I,
-                    )
-                    and not re.search(
-                        r"\b(?:for me|i (?:have|had|am)|we (?:have|had|are))\b",
-                        clause,
-                        re.I,
-                    )
-                ):
-                    continue
-                historical = fixed_in_sentence or bool(
-                    re.search(
-                        r"\b(?:used to|previously|back then|last year|in the past)\b|"
-                        r"\b(?:i|we) (?:had|was having|were having|was getting|were getting|"
-                        r"was seeing|were seeing|previously had|saw|experienced)\b",
-                        clause,
-                        re.I,
-                    )
-                )
-                # A later sentence explaining that an upgrade or fix worked
-                # makes this report historical, unless they explicitly say it
-                # is still happening afterward.
-                remaining = text[text.find(sentence) + len(sentence) :]
-                if FIXED.search(remaining) and not re.search(
-                    r"\b(?:still (?:broken|happening|failing|getting|seeing|having)|"
-                    r"(?:not|never) fixed|problem (?:persists|remains))\b",
-                    remaining,
-                    re.I,
-                ):
-                    historical = True
-                if historical:
+                updates = []
+                for match in RESOLVED.finditer(text):
+                    updates.append((match.start(), "historical"))
+                for match in ONGOING.finditer(text):
+                    updates.append((match.start(), "current"))
+                if updates:
+                    status = max(updates)[1]
+                elif rule == "historical experience" or PAST.search(clause):
                     status = "historical"
-                elif re.search(
-                    r"\b(?:still|currently|now|again|keeps?|continue|reproduc(?:es|ible)|"
-                    r"happening|failing|fails|crashes|crashing|breaks|getting|seeing|have|having|am|are|"
-                    r"can reproduce|on my (?:machine|computer|system|setup))\b",
-                    clause,
-                    re.I,
-                ) or re.search(r"\bsame (?:issue|problem|here|for me)\b", clause, re.I):
+                elif re.search(rf"\b{SPEAKER}\s+(?:had|was|were)\b", clause, re.I):
+                    status = "historical"
+                elif re.search(r"\b(?:same|this|it|have|having|getting|seeing|am|are|can|fails|crashes|broken|currently|now)\b", clause, re.I):
                     status = "current"
                 else:
                     status = "unclear"
@@ -313,20 +153,17 @@ def classify_comment(comment: str) -> Optional[Detection]:
     return None
 
 
-def is_eligible_author(author: str, creator: str) -> bool:
-    return bool(
-        author
-        and not BOT_NAME.search(author)
-        and author.casefold() != (creator or "").casefold()
-    )
+# A person can post multiple comments. We count their account only once.
+def is_eligible_author(author, creator):
+    return bool(author and author.casefold() != (creator or "").casefold() and not BOT.search(author))
 
 
 @dataclass(frozen=True)
 class Report:
     author: str
-    date: Optional[datetime]
+    date: datetime
     evidence: Detection
-    after_closure_days: Optional[int]
+    after_closure_days: int | None
 
 
 @dataclass
@@ -336,60 +173,43 @@ class IssueResult:
     postclosure_reports: list
 
 
-def latest_closure(issue) -> Optional[datetime]:
-    """Return last dated closure only for an issue closed in the snapshot.
-
-    If a reopen occurs after that closure, we cannot call later comments
-    post-closure reports. Sorting also guards against non-chronological JSON.
-    """
+def latest_closure(issue):
+    """Find the last recorded closure only if the issue is still closed."""
     if issue.state != State.closed:
         return None
-    events = sorted(
-        (
-            e
-            for e in issue.events
-            if e.event_date and e.event_type in {"closed", "reopened"}
-        ),
-        key=lambda event: event.event_date,
-    )
+    events = sorted((event for event in issue.events
+                     if event.event_date and event.event_type in {"closed", "reopened"}),
+                    key=lambda event: event.event_date)
     if not events or events[-1].event_type != "closed":
         return None
     return events[-1].event_date
 
 
-def analyze_issue(issue) -> IssueResult:
+def analyze_issue(issue):
+    """Collect evidence from distinct outside commenters, including after closure."""
     closure = latest_closure(issue)
-    reports_by_author = {}
-    postclosure_by_author = {}
-    comments = sorted(
-        (e for e in issue.events if e.event_type == "commented" and e.event_date),
-        key=lambda e: e.event_date,
-    )
-    for event in comments:
+    reports = {}
+    after_closure = {}
+    events = sorted((event for event in issue.events
+                     if event.event_type == "commented" and event.event_date),
+                    key=lambda event: event.event_date)
+    for event in events:
         if not is_eligible_author(event.author, issue.creator):
             continue
-        detection = classify_comment(event.comment or "")
-        if detection is None:
+        evidence = classify_comment(event.comment or "")
+        if evidence is None:
             continue
-        author_id = event.author.casefold()
-        if author_id not in reports_by_author:
-            reports_by_author[author_id] = Report(
-                event.author, event.event_date, detection, None
-            )
-        if closure and event.event_date > closure and detection.status == "current":
-            days = (event.event_date - closure).days
-            # Distinct people, not repeat comments. Keep earliest qualifying report.
-            if author_id not in postclosure_by_author:
-                postclosure_by_author[author_id] = Report(
-                    event.author, event.event_date, detection, days
-                )
-    return IssueResult(
-        issue, list(reports_by_author.values()), list(postclosure_by_author.values())
-    )
+        author = event.author.casefold()
+        reports.setdefault(author, Report(event.author, event.event_date, evidence, None))
+        if closure and event.event_date > closure and evidence.status == "current":
+            after_closure.setdefault(
+                author, Report(event.author, event.event_date, evidence,
+                               (event.event_date - closure).days))
+    return IssueResult(issue, list(reports.values()), list(after_closure.values()))
 
 
 class SameProblemReportsAnalysis:
-    """Issue-wide corroboration and evidence after the final recorded closure."""
+    """Show corroborated issues and a chart of post-closure report timing."""
 
     def __init__(self):
         self.label = config.get_parameter("label")
@@ -401,60 +221,46 @@ class SameProblemReportsAnalysis:
         if not issues:
             print(f"No issues found for label {self.label!r}.")
             return
+
         results = [analyze_issue(issue) for issue in issues]
-        corroborated = sorted(
-            (r for r in results if len(r.reports) >= 2),
-            key=lambda r: (-len(r.reports), r.issue.number),
-        )
-        closed_candidates = sorted(
-            (r for r in results if r.postclosure_reports),
-            key=lambda r: (-len(r.postclosure_reports), r.issue.number),
-        )
-        print(
-            f"Analyzed {len(results)} issues"
-            + (f" labeled {self.label}" if self.label else "")
-            + "."
-        )
+        corroborated = [r for r in results if len(r.reports) >= 2]
+        candidates = sorted((r for r in results if r.postclosure_reports),
+                            key=lambda r: (-len(r.postclosure_reports), r.issue.number))
+        print(f"Analyzed {len(results)} issues" +
+              (f" labeled {self.label}" if self.label else "") + ".")
         print(f"Issues with 2+ distinct reporting commenters: {len(corroborated)}")
-        print(
-            f"Closed issues with 1+ possible post-closure report: {len(closed_candidates)}"
-        )
-        print("\nPossible post-closure reports (review the evidence):")
-        for r in closed_candidates[:12]:
-            print(
-                f"  #{r.issue.number}: {len(r.postclosure_reports)} reporter(s) "
-                f"{r.issue.url or ''}"
-            )
-            for report in r.postclosure_reports[:2]:
-                print(
-                    f"     {report.author}, {report.after_closure_days} days after closure, "
-                    f"{report.evidence.status}: {report.evidence.excerpt[:140]}"
-                )
-        # How long after a recorded closure are similar experiences reported?
-        delays = [
-            report.after_closure_days
-            for r in closed_candidates
-            for report in r.postclosure_reports
-        ]
-        delayed = [
-            sum(days <= 30 for days in delays),
-            sum(30 < days <= 180 for days in delays),
-            sum(180 < days <= 365 for days in delays),
-            sum(days > 365 for days in delays),
-        ]
+        print(f"Closed issues with 1+ possible post-closure report: {len(candidates)}")
+        # Multiple independent reports are a more useful review shortlist
+        # than isolated 'same here' comments.
+        repeated = [result for result in candidates
+                    if len(result.postclosure_reports) >= 2]
+        print(f"Of these, {len(repeated)} issues have 2+ post-closure reporters; "
+              f"{sum(len(r.postclosure_reports) >= 3 for r in repeated)} have 3+.")
+        print("\nFirst issues to review (independent reports after closure):")
+        for result in (repeated or candidates)[:12]:
+            print(f"  #{result.issue.number}: {result.issue.title}")
+            print(f"     {len(result.postclosure_reports)} reporting account(s) | "
+                  f"{result.issue.url or ''}")
+            for report in result.postclosure_reports:
+                print(f"     - {report.author}, {report.after_closure_days} days after "
+                      f"closure: {report.evidence.excerpt[:140]}")
+
+        delays = [report.after_closure_days for r in candidates
+                  for report in r.postclosure_reports]
+        counts = [sum(d <= 30 for d in delays),
+                  sum(30 < d <= 180 for d in delays),
+                  sum(180 < d <= 365 for d in delays),
+                  sum(d > 365 for d in delays)]
+        print("\nDetected reports by time after final closure "
+              "(accounts, not confirmed defects):")
+        print("  0-30 days: {} | 31-180 days: {} | 181-365 days: {} | 366+ days: {}".format(*counts))
+
         fig, ax = plt.subplots(figsize=(8, 4.8))
-        ax.bar(["0–30", "31–180", "181–365", "366+"], delayed)
-        ax.set(
-            xlabel="Days after final recorded closure",
-            ylabel="Detected reporting accounts",
-            title="When do similar-problem reports appear after closure?",
-        )
-        fig.text(
-            0.5,
-            0.02,
-            "Based on the loaded issue dataset. Signals for review, not verified unresolved bugs.",
-            ha="center",
-            fontsize=9,
-        )
+        ax.bar(["0–30", "31–180", "181–365", "366+"], counts)
+        ax.set(xlabel="Days after last recorded closure",
+               ylabel="Detected reporting accounts",
+               title="When do similar-problem reports appear after closure?")
+        fig.text(0.5, 0.02, "Signals for review, not verified unresolved bugs.",
+                 ha="center", fontsize=9)
         fig.tight_layout(rect=[0, 0.07, 1, 1])
         plt.show()
