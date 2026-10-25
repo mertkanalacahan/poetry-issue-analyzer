@@ -47,3 +47,37 @@ That will output basic information about the issues to the command line.
 To make the application easier to debug, runtime configurations are provided to run each of the analyses you are implementing. When you click on the run button in the left-hand side toolbar, you can select to run one of the three analyses or run the file you are currently viewing. That makes debugging a little easier. This run configuration is specified in the `.vscode/launch.json` if you want to modify it.
 
 The `.vscode/settings.json` also customizes the VSCode user interface sligthly to make navigation and debugging easier. But that is a matter of preference and can be turned off by removing the appropriate settings.
+
+## Feature 1: Same-Problem Reports
+
+When a GitHub issue is closed, that doesn't necessarily mean people have stopped encountering the problem. This feature looks for closed issues where other users have continued reporting similar problems, helping maintainers identify issues that might deserve another look.
+
+### How it works
+
+The program reads issue comments and looks for phrases that suggest someone personally experienced the problem, such as "same issue here" or "I'm getting this error too". It uses text-matching rules rather than AI and tries to ignore questions, quoted text, bots, and other comments that aren't actual reports.
+
+It then checks which reports were posted after the issue's last closure and counts each reporting account only once per issue.
+
+### How to run it
+
+```bash
+python run.py --feature 1
+```
+
+To analyze only issues with a particular label:
+
+```bash
+python run.py --feature 1 --label kind/bug
+```
+
+### What it shows
+
+The console lists the issues with the most independent reports after closure, along with usernames, dates, example comments, and GitHub links. It also highlights unusually late reports.
+
+Two charts show how many reporting accounts each flagged issue has and how long after closure the reports were posted.
+
+### Limitations
+
+The program looks for common ways people describe problems, so it can miss unusual wording or mistake unrelated comments for genuine reports. A comment posted after closure also doesn't necessarily mean the problem first occurred after closure.
+
+The results are meant to help maintainers find issues worth investigating, not automatically determine whether a bug is still present.
