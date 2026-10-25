@@ -5,6 +5,7 @@ Results are evidence for maintainer review, not proof of identical root causes.
 from dataclasses import dataclass
 from datetime import datetime
 import re
+from textwrap import shorten
 
 import matplotlib.pyplot as plt
 
@@ -56,6 +57,17 @@ REPORT_PATTERNS += [
     ("direct experience", rf"\b{SPEAKER}\s+(?:also\s+)?(?:hit|encountered|got)\s+this\s+(?:when|while|after|on)\b"),
     ("reproduced", rf"\b{SPEAKER}\s+(?:(?:have|has)\s+)?(?:just\s+)?(?:tested|verified|reproduced)\s+this\s+(?:and|but)\s+(?:the\s+same\s+)?(?:issue|bug|problem)\s+(?:still\s+)?(?:occurs|exists|persists)\b"),
     ("historical experience", rf"\b{SPEAKER}\s+can\s+confirm\s*,?\s+.{0,90}?\bfixes\s+this\s+(?:issue|problem|bug)\b"),
+]
+# A few ordinary ways of reporting an experience that earlier rules missed.
+# These do not rely on product names, GitHub issue numbers, or learned weights.
+REPORT_PATTERNS += [
+    ("same problem", rf"\b{SPEAKER}\s+(?:(?:am|are|was|were)\s+)?(?:have|had|having|see|seeing|get|getting|experience|experiencing)\s+(?:(?:the|this|a)\s+)?(?:exact|exactly)\s+same\s+{PROBLEM}\b"),
+    ("reproduced", rf"\b(?:i|we)\s+(?:(?:can|could|have|had)\s+)?(?:reproduce|reproduced|replicate|replicated|recreate|recreated)\s+(?:on|with|using|in)\b|^reproduced\s+(?:on|with|using|in)\b"),
+    ("persistent problem", r"^this\s+is\s+still\s+(?:a|an|the)\s+(?:issue|problem|bug)\b"),
+    ("direct experience", r"\b(?:it(?:'s| is)\s+)?happening\s+(?:the\s+)?same\s+to\s+(?:me|us)\b"),
+    ("direct experience", rf"\b{SPEAKER}\s+(?:(?:am|are|was|were)\s+)?(?:experiencing|seeing|having)\s+something\s+(?:like|similar\s+to)\s+this\b"),
+    ("direct experience", rf"\b{SPEAKER}\s+(?:just\s+)?(?:ran|run)\s+into\s+this\s+(?:when|while|after)\b"),
+    ("direct experience", rf"\b{SPEAKER}\s+(?:(?:just|also|recently)\s+)?(?:ran|run)\s+into\s+this\b"),
 ]
 REPORT_PATTERNS = [(label, re.compile(pattern, re.I)) for label, pattern in REPORT_PATTERNS]
 
@@ -186,14 +198,18 @@ def latest_closure(issue):
 
 
 def analyze_issue(issue):
-    """Collect evidence from distinct outside commenters, including after closure."""
+    """Collect one report per outside account, keeping post-closure evidence.
+
+    A later success does not erase a person's earlier report. The timestamp
+    describes when the comment was POSTED, not necessarily when the bug occurred.
+    """
     closure = latest_closure(issue)
     reports = {}
     after_closure = {}
-    events = sorted((event for event in issue.events
-                     if event.event_type == "commented" and event.event_date),
-                    key=lambda event: event.event_date)
-    for event in events:
+    comments = sorted((event for event in issue.events
+                       if event.event_type == "commented" and event.event_date),
+                      key=lambda event: event.event_date)
+    for event in comments:
         if not is_eligible_author(event.author, issue.creator):
             continue
         evidence = classify_comment(event.comment or "")
@@ -201,15 +217,30 @@ def analyze_issue(issue):
             continue
         author = event.author.casefold()
         reports.setdefault(author, Report(event.author, event.event_date, evidence, None))
-        if closure and event.event_date > closure and evidence.status == "current":
+        if closure and event.event_date > closure:
+            # Historical, current, and unclear first-hand reports all count.
+            # We are screening comments posted after closure, not proving
+            # the problem was unresolved at the time of the comment.
             after_closure.setdefault(
                 author, Report(event.author, event.event_date, evidence,
                                (event.event_date - closure).days))
     return IssueResult(issue, list(reports.values()), list(after_closure.values()))
 
 
+def equal_time_windows(delays, window_days=180):
+    """Count account–issue reports in consecutive equal-length day intervals."""
+    if not delays:
+        return ["0–179"], [0]
+    counts = [0] * (max(delays) // window_days + 1)
+    for delay in delays:
+        counts[delay // window_days] += 1
+    labels = [f"{i * window_days}–{(i + 1) * window_days - 1}"
+              for i in range(len(counts))]
+    return labels, counts
+
+
 class SameProblemReportsAnalysis:
-    """Show corroborated issues and a chart of post-closure report timing."""
+    """Rank post-closure candidate issues and show two project-level charts."""
 
     def __init__(self):
         self.label = config.get_parameter("label")
@@ -223,44 +254,94 @@ class SameProblemReportsAnalysis:
             return
 
         results = [analyze_issue(issue) for issue in issues]
-        corroborated = [r for r in results if len(r.reports) >= 2]
         candidates = sorted((r for r in results if r.postclosure_reports),
                             key=lambda r: (-len(r.postclosure_reports), r.issue.number))
-        print(f"Analyzed {len(results)} issues" +
-              (f" labeled {self.label}" if self.label else "") + ".")
-        print(f"Issues with 2+ distinct reporting commenters: {len(corroborated)}")
-        print(f"Closed issues with 1+ possible post-closure report: {len(candidates)}")
-        # Multiple independent reports are a more useful review shortlist
-        # than isolated 'same here' comments.
-        repeated = [result for result in candidates
-                    if len(result.postclosure_reports) >= 2]
-        print(f"Of these, {len(repeated)} issues have 2+ post-closure reporters; "
-              f"{sum(len(r.postclosure_reports) >= 3 for r in repeated)} have 3+.")
-        print("\nFirst issues to review (independent reports after closure):")
-        for result in (repeated or candidates)[:12]:
-            print(f"  #{result.issue.number}: {result.issue.title}")
-            print(f"     {len(result.postclosure_reports)} reporting account(s) | "
-                  f"{result.issue.url or ''}")
-            for report in result.postclosure_reports:
-                print(f"     - {report.author}, {report.after_closure_days} days after "
-                      f"closure: {report.evidence.excerpt[:140]}")
+        repeated = [r for r in candidates if len(r.postclosure_reports) >= 2]
+        three_plus = sum(len(r.postclosure_reports) >= 3 for r in repeated)
 
+        print(f"\nSAME-PROBLEM REPORTS | {self.label or 'all labels'}")
+        print("Question: Which closed issues received similar-problem reports after closure?")
+        print("Method: Screen firsthand comments; count each outside account once per issue.")
+        print(f"Analyzed {len(results):,} issues | {len(candidates)} flagged | "
+              f"{len(repeated)} with 2+ reporters | {three_plus} with 3+")
+
+        # List every distinct account and its first qualifying comment date.
+        # One excerpt per issue keeps the report navigable without hiding evidence.
+        print("\nMost independently reported (top 8):")
+        chosen = (repeated or candidates)[:8]
+        if not chosen:
+            print("  None found.")
+        for result in chosen:
+            sample = result.postclosure_reports[0]
+            title = shorten(result.issue.title or "(untitled)", width=76, placeholder="...")
+            quote = shorten(" ".join(sample.evidence.excerpt.split()),
+                            width=90, placeholder="...")
+            closure = latest_closure(result.issue)
+            print(f"  #{result.issue.number}: {title} "
+                  f"({len(result.postclosure_reports)} accounts)")
+            print(f"    Closed: {closure.date().isoformat()}")
+            for report in result.postclosure_reports:
+                print(f"      {report.author}: {report.date.date().isoformat()} "
+                      f"(+{report.after_closure_days}d)")
+            print(f'    Example ({sample.author}): "{quote}"')
+            print(f"    {result.issue.url or '(no URL)'}")
+
+        # Also show extreme delays, independently of the account-count ranking.
+        print("\nLongest-delayed reports (top 5; different issues):")
+        longest_per_issue = [
+            (max(r.postclosure_reports, key=lambda report: report.after_closure_days), r)
+            for r in candidates
+        ]
+        longest_per_issue.sort(
+            key=lambda item: (-item[0].after_closure_days, item[1].issue.number)
+        )
+        if not longest_per_issue:
+            print("  None found.")
+        for report, result in longest_per_issue[:5]:
+            title = shorten(result.issue.title or "(untitled)", width=76, placeholder="...")
+            quote = shorten(" ".join(report.evidence.excerpt.split()),
+                            width=90, placeholder="...")
+            closure = latest_closure(result.issue)
+            print(f"  #{result.issue.number}: {title}")
+            print(f"    Closed: {closure.date().isoformat()} | "
+                  f"{report.author}: {report.date.date().isoformat()} "
+                  f"(+{report.after_closure_days}d)")
+            print(f'    Example: "{quote}"')
+            print(f"    {result.issue.url or '(no URL)'}")
+
+        issue_counts = [len(r.postclosure_reports) for r in candidates]
+        priority_counts = [sum(n == 1 for n in issue_counts),
+                           sum(n == 2 for n in issue_counts),
+                           sum(n >= 3 for n in issue_counts)]
         delays = [report.after_closure_days for r in candidates
                   for report in r.postclosure_reports]
-        counts = [sum(d <= 30 for d in delays),
-                  sum(30 < d <= 180 for d in delays),
-                  sum(180 < d <= 365 for d in delays),
-                  sum(d > 365 for d in delays)]
-        print("\nDetected reports by time after final closure "
-              "(accounts, not confirmed defects):")
-        print("  0-30 days: {} | 31-180 days: {} | 181-365 days: {} | 366+ days: {}".format(*counts))
+        labels, time_counts = equal_time_windows(delays)
+        print("\nNote: Matches need review, not proven bugs. Dates are comment dates, "
+              "not necessarily incident dates.")
 
-        fig, ax = plt.subplots(figsize=(8, 4.8))
-        ax.bar(["0–30", "31–180", "181–365", "366+"], counts)
-        ax.set(xlabel="Days after last recorded closure",
-               ylabel="Detected reporting accounts",
-               title="When do similar-problem reports appear after closure?")
-        fig.text(0.5, 0.02, "Signals for review, not verified unresolved bugs.",
+        # Panel 1: give maintainers a reason to prioritize corroborated issues.
+        # Panel 2: equal 180-day intervals, so no open-ended last bucket.
+        width = max(12, min(17, 8 + len(labels) * 0.48))
+        fig, (priority_ax, timing_ax) = plt.subplots(1, 2, figsize=(width, 5.3))
+        fig.suptitle("Potential Problem Reports After Issue Closure")
+
+        bars = priority_ax.bar(["1", "2", "3+"], priority_counts)
+        priority_ax.set(xlabel="Different reporting accounts per issue",
+                        ylabel="Closed issues flagged",
+                        title="How much independent evidence per issue?")
+        priority_ax.bar_label(bars, padding=3)
+        priority_ax.set_ylim(0, max(priority_counts + [1]) * 1.17)
+
+        bars = timing_ax.bar(range(len(time_counts)), time_counts)
+        timing_ax.set_xticks(range(len(labels)), labels, rotation=50, ha="right")
+        timing_ax.set(xlabel="Days from closure to comment (180-day windows)",
+                      ylabel="Account–issue reports",
+                      title="When were reports posted?")
+        timing_ax.bar_label(bars, padding=2, fontsize=8)
+        timing_ax.set_ylim(0, max(time_counts + [1]) * 1.19)
+        fig.text(0.5, 0.015,
+                 "Candidate reports, not verified defects. Later fixes do not erase reports. "
+                 "Issue observation periods differ.",
                  ha="center", fontsize=9)
-        fig.tight_layout(rect=[0, 0.07, 1, 1])
+        fig.tight_layout(rect=[0, 0.085, 1, 0.94])
         plt.show()
