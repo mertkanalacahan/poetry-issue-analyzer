@@ -9,6 +9,7 @@ import argparse
 
 import config
 from example_analysis import ExampleAnalysis
+from stale_issues_analysis import StaleIssuesAnalysis
 
 
 def parse_args():
@@ -35,6 +36,10 @@ def parse_args():
     ap.add_argument('--label', '-l', type=str, required=False,
                     help='Optional parameter for analyses focusing on a specific label')
     
+    # Optional parameter for analyses focusing on a window of inactivity
+    ap.add_argument('--days', '-d', type=int, required=False,
+                    help='Days of inactivity after which an open issue counts as stale (feature 3, default 90)')
+    
     return ap.parse_args()
 
 
@@ -52,6 +57,6 @@ elif args.feature == 1:
 elif args.feature == 2:
     pass # TODO call second analysis
 elif args.feature == 3:
-    pass # TODO call third analysis
+    StaleIssuesAnalysis().run()
 else:
     print('Need to specify which feature to run with --feature flag.')
