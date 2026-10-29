@@ -47,3 +47,63 @@ That will output basic information about the issues to the command line.
 To make the application easier to debug, runtime configurations are provided to run each of the analyses you are implementing. When you click on the run button in the left-hand side toolbar, you can select to run one of the three analyses or run the file you are currently viewing. That makes debugging a little easier. This run configuration is specified in the `.vscode/launch.json` if you want to modify it.
 
 The `.vscode/settings.json` also customizes the VSCode user interface sligthly to make navigation and debugging easier. But that is a matter of preference and can be turned off by removing the appropriate settings.
+
+## Feature 3: Stale Open Issues
+
+An open issue that nobody has touched in months is a different problem depending on how it
+got there. This feature separates issues that were **never answered** at all from ones that
+had a real discussion and then **went quiet**, and compares those two outcomes across labels.
+
+### How it works
+
+For every open issue, the program finds the most recent non-bot event and measures how long
+ago that was. Bot activity is ignored on purpose: a stale-bot reminder makes a dead issue look
+alive, which is exactly what we are trying to detect.
+
+Time is measured against the **dataset's own snapshot date** (the latest timestamp anywhere in
+the data file), not against today's date. The data file is a frozen export, so using today
+would mark every open issue stale and make the `--days` input meaningless.
+
+Issues silent for at least N days are then split into two groups: those where nobody other
+than the author ever commented, and those that did get replies before going quiet. Issues with
+recent activity are kept as a comparison group so the per-label shares mean something.
+
+### How to run it
+
+```bash
+python run.py --feature 3
+```
+
+The inactivity window defaults to 90 days. To choose your own:
+
+```bash
+python run.py --feature 3 --days 180
+```
+
+An optional label filter narrows the analysis to one part of the project:
+
+```bash
+python run.py --feature 3 --days 180 --label kind/bug
+```
+
+### What it shows
+
+The console prints the snapshot date used, how many open issues are stale, and the split
+between never-answered and went-quiet. It then lists the never-answered share for the busiest
+labels, the longest-ignored issues, and the longest-abandoned discussions, each with issue
+numbers, dates, and GitHub links. It also counts "monologues" - issues where the author kept
+commenting and nobody ever replied.
+
+Two charts accompany the output: a per-label breakdown shown as shares rather than raw counts,
+so a label with 400 open issues can be compared fairly against one with 30, and a distribution
+of how long the silence has lasted for each of the two stale groups.
+
+### Limitations
+
+Silence is not the same as neglect. Some issues need no reply, some are tracked elsewhere, and
+some were quietly fixed without anyone closing them. The results point at where attention has
+not been going, not at who is at fault.
+
+Activity counts any non-bot event, so a drive-by label change resets the clock even though no
+human actually answered. The bot list covers the common automation accounts and may miss a
+project-specific one.
