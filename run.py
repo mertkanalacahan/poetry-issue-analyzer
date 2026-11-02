@@ -7,6 +7,7 @@ import argparse
 
 import config
 from example_analysis import ExampleAnalysis
+from stale_issues_analysis import ACTIVITY_MODES, StaleIssuesAnalysis
 from same_problem_reports import SameProblemReportsAnalysis
 #feature 2: developer response time
 from developer_response_time import DeveloperResponseAnalysis
@@ -23,34 +24,30 @@ def parse_args():
     below.
     """
     ap = argparse.ArgumentParser("run.py")
-
+    
     # Required parameter specifying what analysis to run
-    ap.add_argument(
-        "--feature",
-        "-f",
-        type=int,
-        required=True,
-        help="Which of the three features to run",
-    )
-
+    ap.add_argument('--feature', '-f', type=int, required=True,
+                    help='Which of the three features to run')
+    
     # Optional parameter for analyses focusing on a specific user (i.e., contributor)
-    ap.add_argument(
-        "--user",
-        "-u",
-        type=str,
-        required=False,
-        help="Optional parameter for analyses focusing on a specific user",
-    )
-
+    ap.add_argument('--user', '-u', type=str, required=False,
+                    help='Optional parameter for analyses focusing on a specific user')
+    
     # Optional parameter for analyses focusing on a specific label
-    ap.add_argument(
-        "--label",
-        "-l",
-        type=str,
-        required=False,
-        help="Optional parameter for analyses focusing on a specific label",
-    )
+    ap.add_argument('--label', '-l', type=str, required=False,
+                    help='Optional parameter for analyses focusing on a specific label')
+    
+    # Optional parameter for analyses focusing on a window of inactivity
+    ap.add_argument('--days', '-d', type=int, required=False,
+                    help='Days of inactivity after which an open issue counts as stale (feature 3, default 90)')
 
+    # Optional parameter controlling what counts as activity in the first place
+    ap.add_argument('--activity', '-a', type=str, required=False,
+                    choices=ACTIVITY_MODES,
+                    help="Which clock to judge silence by (feature 3, default strict). "
+                         "'strict' ignores labels, mentions and other bookkeeping; "
+                         "'any' counts every non-bot event.")
+    
     return ap.parse_args()
 
 
@@ -68,6 +65,6 @@ elif args.feature == 2:
     #run feature 2
     DeveloperResponseAnalysis().run()
 elif args.feature == 3:
-    pass  # TODO call third analysis
+    StaleIssuesAnalysis().run()
 else:
     print("Need to specify which feature to run with --feature flag.")

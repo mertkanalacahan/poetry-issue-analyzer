@@ -81,3 +81,73 @@ Two charts show how many reporting accounts each flagged issue has and how long 
 The program looks for common ways people describe problems, so it can miss unusual wording or mistake unrelated comments for genuine reports. A comment posted after closure also doesn't necessarily mean the problem first occurred after closure.
 
 The results are meant to help maintainers find issues worth investigating, not automatically determine whether a bug is still present.
+
+## Feature 2: Developer Response Time
+
+How long does an issue wait before a developer answers it? The data file has no maintainer field, so this feature infers developers from their behaviour and measures the gap between opening an issue and their first comment.
+
+### How it works
+
+A developer is any account that labeled, closed, reopened, assigned or locked an issue someone else created. Actions on one's own issue are ignored, because issue templates add labels under the creator's name and anyone can close their own report. Developers are inferred from the whole dataset, so a `--label` filter cannot hide them.
+
+For each issue the program takes the earliest comment by a developer other than the creator. Issues that never received one are measured up to the dataset's snapshot date rather than today, so results do not drift as time passes.
+
+### How to run it
+
+```bash
+python run.py --feature 2
+```
+
+To analyze only issues with a particular label:
+
+```bash
+python run.py --feature 2 --label kind/bug
+```
+
+### What it shows
+
+The console reports the median, mean and 90th-percentile wait, the share answered within a day, a week and a month, how many never-answered issues are still open, the slowest first replies, and who replies first most often.
+
+Two charts show the distribution of reply times with a separate bar for issues that never got one, and the fast, slow and never-replied split across the busiest labels.
+
+### Limitations
+
+Developer status is inferred from triage activity, not read from the data, so the list can include an active triager or miss a quiet maintainer. Replies made in pull requests or chat are invisible here, so an issue can look ignored when it was not.
+
+## Feature 3: Stale Open Issues
+
+An open issue that nobody has touched in months is a different problem depending on how it got there. This feature separates issues that were **never answered** at all from ones that had a real discussion and then **went quiet**, and compares those two outcomes across labels.
+
+### How it works
+
+For every open issue the program finds the most recent non-bot event and measures how long ago it was. Bot activity is ignored on purpose: a stale-bot reminder makes a dead issue look alive.
+
+Two clocks are kept. The **substantive** clock, the default, moves only when a person engaged: a comment, close, reopen, assignment or retitle. The **touch** clock moves on any non-bot event, metadata included. The gap matters: one maintainer relabelled 83 open issues shortly before the export, and counting that sweep as attention moves the stale share from 61% to 26%. Time is measured against the dataset's snapshot date, because the export is frozen.
+
+### How to run it
+
+```bash
+python run.py --feature 3
+```
+
+The window defaults to 90 days; an optional label filter narrows it:
+
+```bash
+python run.py --feature 3 --days 180 --label kind/bug
+```
+
+To count every non-bot event instead, switch clocks:
+
+```bash
+python run.py --feature 3 --activity any
+```
+
+### What it shows
+
+The console prints the snapshot date, the active clock, the stale count, and the never-answered versus went-quiet split. It then names the issues touched by bookkeeping alone, the never-answered share per label, the longest-ignored issues, and "monologues" where nobody ever replied.
+
+Two charts show the per-label breakdown as shares rather than raw counts, and how long the silence has lasted for each stale group.
+
+### Limitations
+
+Silence is not the same as neglect. Some issues need no reply, some are tracked elsewhere, and some were quietly fixed without being closed. Which events count as substantive is a judgement call, so both readings stay available through `--activity`.
