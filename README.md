@@ -48,38 +48,81 @@ To make the application easier to debug, runtime configurations are provided to 
 
 The `.vscode/settings.json` also customizes the VSCode user interface sligthly to make navigation and debugging easier. But that is a matter of preference and can be turned off by removing the appropriate settings.
 
-## Feature 3: Stale Open Issues
+## Feature 1: Same-Problem Reports
 
-An open issue that nobody has touched in months is a different problem depending on how it
-got there. This feature separates issues that were **never answered** at all from ones that
-had a real discussion and then **went quiet**, and compares those two outcomes across labels.
+When a GitHub issue is closed, that doesn't necessarily mean people have stopped encountering the problem. This feature looks for closed issues where other users have continued reporting similar problems, helping maintainers identify issues that might deserve another look.
 
 ### How it works
 
-For every open issue, the program finds the most recent non-bot event and measures how long
-ago that was. Bot activity is ignored on purpose: a stale-bot reminder makes a dead issue look
-alive, which is exactly what we are trying to detect.
+The program reads issue comments and looks for phrases that suggest someone personally experienced the problem, such as "same issue here" or "I'm getting this error too". It uses text-matching rules rather than AI and tries to ignore questions, quoted text, bots, and other comments that aren't actual reports.
 
-Two clocks are kept, because "somebody touched this issue" and "somebody answered this issue"
-are different things. The **substantive** clock moves only on events where a person engaged:
-a comment, a close, a reopen, an assignment, a retitle. The **touch** clock moves on any
-non-bot event at all, metadata included. Both start at the opening date, since filing the
-issue is itself somebody doing something.
+It then checks which reports were posted after the issue's last closure and counts each reporting account only once per issue.
 
-The substantive clock is the default, and the difference is not academic. In this dataset one
-maintainer relabelled 83 open issues on 2024-10-13, a week before the data was exported. On
-the touch clock all 83 look freshly active; on the substantive clock 54 of them are still
-silent, several for over a year. Counting that sweep as attention takes the stale share from
-61% down to 26% and the never-answered count from 21 down to 3 - so the looser reading does
-not merely blur the result, it reverses it.
+### How to run it
 
-Time is measured against the **dataset's own snapshot date** (the latest timestamp anywhere in
-the data file), not against today's date. The data file is a frozen export, so using today
-would mark every open issue stale and make the `--days` input meaningless.
+```bash
+python run.py --feature 1
+```
 
-Issues silent for at least N days are then split into two groups: those where nobody other
-than the author ever commented, and those that did get replies before going quiet. Issues with
-recent activity are kept as a comparison group so the per-label shares mean something.
+To analyze only issues with a particular label:
+
+```bash
+python run.py --feature 1 --label kind/bug
+```
+
+### What it shows
+
+The console lists the issues with the most independent reports after closure, along with usernames, dates, example comments, and GitHub links. It also highlights unusually late reports.
+
+Two charts show how many reporting accounts each flagged issue has and how long after closure the reports were posted.
+
+### Limitations
+
+The program looks for common ways people describe problems, so it can miss unusual wording or mistake unrelated comments for genuine reports. A comment posted after closure also doesn't necessarily mean the problem first occurred after closure.
+
+The results are meant to help maintainers find issues worth investigating, not automatically determine whether a bug is still present.
+
+## Feature 2: Developer Response Time
+
+How long does an issue wait before a developer answers it? The data file has no maintainer field, so this feature infers developers from their behaviour and measures the gap between opening an issue and their first comment.
+
+### How it works
+
+A developer is any account that labeled, closed, reopened, assigned or locked an issue someone else created. Actions on one's own issue are ignored, because issue templates add labels under the creator's name and anyone can close their own report. Developers are inferred from the whole dataset, so a `--label` filter cannot hide them.
+
+For each issue the program takes the earliest comment by a developer other than the creator. Issues that never received one are measured up to the dataset's snapshot date rather than today, so results do not drift as time passes.
+
+### How to run it
+
+```bash
+python run.py --feature 2
+```
+
+To analyze only issues with a particular label:
+
+```bash
+python run.py --feature 2 --label kind/bug
+```
+
+### What it shows
+
+The console reports the median, mean and 90th-percentile wait, the share answered within a day, a week and a month, how many never-answered issues are still open, the slowest first replies, and who replies first most often.
+
+Two charts show the distribution of reply times with a separate bar for issues that never got one, and the fast, slow and never-replied split across the busiest labels.
+
+### Limitations
+
+Developer status is inferred from triage activity, not read from the data, so the list can include an active triager or miss a quiet maintainer. Replies made in pull requests or chat are invisible here, so an issue can look ignored when it was not.
+
+## Feature 3: Stale Open Issues
+
+An open issue that nobody has touched in months is a different problem depending on how it got there. This feature separates issues that were **never answered** at all from ones that had a real discussion and then **went quiet**, and compares those two outcomes across labels.
+
+### How it works
+
+For every open issue the program finds the most recent non-bot event and measures how long ago it was. Bot activity is ignored on purpose: a stale-bot reminder makes a dead issue look alive.
+
+Two clocks are kept. The **substantive** clock, the default, moves only when a person engaged: a comment, close, reopen, assignment or retitle. The **touch** clock moves on any non-bot event, metadata included. The gap matters: one maintainer relabelled 83 open issues shortly before the export, and counting that sweep as attention moves the stale share from 61% to 26%. Time is measured against the dataset's snapshot date, because the export is frozen.
 
 ### How to run it
 
@@ -87,20 +130,13 @@ recent activity are kept as a comparison group so the per-label shares mean some
 python run.py --feature 3
 ```
 
-The inactivity window defaults to 90 days. To choose your own:
-
-```bash
-python run.py --feature 3 --days 180
-```
-
-An optional label filter narrows the analysis to one part of the project:
+The window defaults to 90 days; an optional label filter narrows it:
 
 ```bash
 python run.py --feature 3 --days 180 --label kind/bug
 ```
 
-To judge silence the way GitHub's own "updated" timestamp does, counting every non-bot event
-including labels and mentions, switch clocks:
+To count every non-bot event instead, switch clocks:
 
 ```bash
 python run.py --feature 3 --activity any
@@ -108,28 +144,10 @@ python run.py --feature 3 --activity any
 
 ### What it shows
 
-The console prints the snapshot date used, which clock is in force, how many open issues are
-stale, and the split between never-answered and went-quiet. It then reports how many stale
-issues were touched inside the window by bookkeeping alone - the ones that would read as
-active on the looser clock - and names the days those touches cluster on, which is what bulk
-triage looks like from the outside. It then lists the never-answered share for the busiest
-labels, the longest-ignored issues, and the longest-abandoned discussions, each with issue
-numbers, dates, and GitHub links. It also counts "monologues" - issues where the author kept
-commenting and nobody ever replied.
+The console prints the snapshot date, the active clock, the stale count, and the never-answered versus went-quiet split. It then names the issues touched by bookkeeping alone, the never-answered share per label, the longest-ignored issues, and "monologues" where nobody ever replied.
 
-Two charts accompany the output: a per-label breakdown shown as shares rather than raw counts,
-so a label with 400 open issues can be compared fairly against one with 30, and a distribution
-of how long the silence has lasted for each of the two stale groups.
+Two charts show the per-label breakdown as shares rather than raw counts, and how long the silence has lasted for each stale group.
 
 ### Limitations
 
-Silence is not the same as neglect. Some issues need no reply, some are tracked elsewhere, and
-some were quietly fixed without anyone closing them. The results point at where attention has
-not been going, not at who is at fault.
-
-Which events count as substantive is a judgement call, not a fact. A retitle is treated as
-engagement and a label is not, and reasonable people would draw that line elsewhere; both
-readings are available through `--activity` so the choice is visible rather than buried.
-The bot list covers the common automation accounts and may miss a project-specific one - and
-note that a human doing bulk automation-like work, as happened here on 2024-10-13, is not a
-bot and should not be filtered as one. Separating the two clocks is what handles that case.
+Silence is not the same as neglect. Some issues need no reply, some are tracked elsewhere, and some were quietly fixed without being closed. Which events count as substantive is a judgement call, so both readings stay available through `--activity`.

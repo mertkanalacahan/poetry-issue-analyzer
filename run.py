@@ -1,5 +1,3 @@
-
-
 """
 Starting point of the application. This module is invoked from
 the command line to run the analyses.
@@ -10,6 +8,9 @@ import argparse
 import config
 from example_analysis import ExampleAnalysis
 from stale_issues_analysis import ACTIVITY_MODES, StaleIssuesAnalysis
+from same_problem_reports import SameProblemReportsAnalysis
+#feature 2: developer response time
+from developer_response_time import DeveloperResponseAnalysis
 
 
 def parse_args():
@@ -18,7 +19,7 @@ def parse_args():
     with the python command. The --feature flag must be provided as
     that determines what analysis to run. Optionally, you can pass in
     a user and/or a label to run analysis focusing on specific issues.
-    
+
     You can also add more command line arguments following the pattern
     below.
     """
@@ -50,20 +51,20 @@ def parse_args():
     return ap.parse_args()
 
 
-
 # Parse feature to call from command line arguments
 args = parse_args()
 # Add arguments to config so that they can be accessed in other parts of the application
 config.overwrite_from_args(args)
-    
+
 # Run the feature specified in the --feature flag
 if args.feature == 0:
     ExampleAnalysis().run()
 elif args.feature == 1:
-    pass # TODO call first analysis
+    SameProblemReportsAnalysis().run()
 elif args.feature == 2:
-    pass # TODO call second analysis
+    #run feature 2
+    DeveloperResponseAnalysis().run()
 elif args.feature == 3:
     StaleIssuesAnalysis().run()
 else:
-    print('Need to specify which feature to run with --feature flag.')
+    print("Need to specify which feature to run with --feature flag.")
