@@ -56,7 +56,7 @@ REPORT_PATTERNS += [
     ("same problem", rf"\b{SPEAKER}\s+(?:was|were)\s+(?:seeing|getting|having)\s+(?:this|the)\s+same\s+(?:error|problem|issue|bug)\b"),
     ("direct experience", rf"\b{SPEAKER}\s+(?:also\s+)?(?:hit|encountered|got)\s+this\s+(?:when|while|after|on)\b"),
     ("reproduced", rf"\b{SPEAKER}\s+(?:(?:have|has)\s+)?(?:just\s+)?(?:tested|verified|reproduced)\s+this\s+(?:and|but)\s+(?:the\s+same\s+)?(?:issue|bug|problem)\s+(?:still\s+)?(?:occurs|exists|persists)\b"),
-    ("historical experience", rf"\b{SPEAKER}\s+can\s+confirm\s*,?\s+.{0,90}?\bfixes\s+this\s+(?:issue|problem|bug)\b"),
+    ("historical experience", rf"\b{SPEAKER}\s+can\s+confirm\s*,?\s+.{{0,90}}?\bfixes\s+this\s+(?:issue|problem|bug)\b"),
 ]
 # A few ordinary ways of reporting an experience that earlier rules missed.
 # These do not rely on product names, GitHub issue numbers, or learned weights.

@@ -17,7 +17,7 @@ from model import Issue
 
 CLOSED = "2024-01-01T00:00:00+00:00"
 from same_problem_reports import (
-    SameProblemReportsAnalysis, analyze_issue, classify_comment,
+    REPORT_PATTERNS, SameProblemReportsAnalysis, analyze_issue, classify_comment,
     clean_comment, equal_time_windows, is_eligible_author, latest_closure,
 )
 
@@ -178,6 +178,17 @@ class CommentDetectionTests(unittest.TestCase):
         self.assertFalse(is_eligible_author('dependabot[bot]', 'reporter'))
         self.assertFalse(is_eligible_author('github-actions[bot]', 'reporter'))
         self.assertTrue(is_eligible_author('anotherUser', 'reporter'))
+
+    def test_confirmation_regex(self):
+        comment = "I can confirm upgrading Poetry fixes this issue."
+
+        rules = [
+            pattern for _, pattern in REPORT_PATTERNS
+            if "confirm" in pattern.pattern and "fixes" in pattern.pattern
+        ]
+
+        self.assertTrue(rules)
+        self.assertTrue(any(rule.search(comment) for rule in rules))
 
 
 class TimelineTests(unittest.TestCase):
