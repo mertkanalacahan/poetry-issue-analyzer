@@ -11,9 +11,10 @@ from unittest.mock import patch
 
 from model import Issue
 from stale_issues_analysis import (
-    ACTIVE, NEVER_ANSWERED, WENT_QUIET, StaleIssuesAnalysis, analyze_issue,
-    as_utc, equal_day_windows, is_bot, label_breakdown, never_answered_share,
-    snapshot_date, validated_days,
+    ACTIVE, ANY, NEVER_ANSWERED, STRICT, WENT_QUIET, StaleIssuesAnalysis,
+    analyze_issue, as_utc, bookkeeping_sweeps, equal_day_windows, is_bot,
+    keep_output_printable, label_breakdown, never_answered_share, snapshot_date,
+    validated_activity, validated_days,
 )
 
 ASOF = datetime(2024, 1, 1, tzinfo=timezone.utc)
@@ -47,16 +48,16 @@ def anchor():
                       state='closed', number=1000)
 
 
-def params(days=90, label=None):
-    """Stand in for config.get_parameter, which this analysis calls twice."""
+def params(days=90, label=None, activity=STRICT):
+    """Stand in for config.get_parameter, which this analysis calls per setting."""
     def fake(name, default=None):
-        return {'days': days, 'label': label}.get(name, default)
+        return {'days': days, 'label': label, 'activity': activity}.get(name, default)
     return fake
 
 
-def run_analysis(issues, days=90, label=None):
+def run_analysis(issues, days=90, label=None, activity=STRICT):
     with patch('stale_issues_analysis.config.get_parameter',
-               side_effect=params(days, label)), \
+               side_effect=params(days, label, activity)), \
          patch('stale_issues_analysis.DataLoader') as loader, \
          patch('stale_issues_analysis.plt.show') as show:
         loader.return_value.get_issues.return_value = issues
@@ -119,11 +120,56 @@ class CohortTests(unittest.TestCase):
             ASOF, 90)
         self.assertEqual(record.responders, 1)
 
-    def test_non_comment_events_count_as_activity_but_not_as_answers(self):
+    def test_labelling_does_not_revive_a_silent_issue(self):
+        """The default clock ignores bookkeeping.
+
+        A maintainer relabelling a dead issue is filing, not answering. Under
+        the strict clock the issue stays stale and the touch clock records that
+        somebody did touch it, which is how the two readings are told apart.
+        """
         record = analyze_issue(
             make_issue([('labeled', days_before(5), 'maintainer')]), ASOF, 90)
-        self.assertEqual(record.cohort, ACTIVE)
+        self.assertEqual(record.cohort, NEVER_ANSWERED)
+        self.assertEqual(record.silent_days, 365)
+        self.assertEqual(record.touch_days, 5)
+        self.assertTrue(record.touched_since)
         self.assertEqual(record.responders, 0)
+
+    def test_loose_clock_still_counts_any_event(self):
+        record = analyze_issue(
+            make_issue([('labeled', days_before(5), 'maintainer')]), ASOF, 90,
+            activity=ANY)
+        self.assertEqual(record.cohort, ACTIVE)
+        self.assertEqual(record.silent_days, 5)
+        self.assertEqual(record.responders, 0)
+        self.assertFalse(record.touched_since)
+
+    def test_substantive_events_move_both_clocks(self):
+        for event_type in ('commented', 'closed', 'reopened', 'assigned', 'renamed'):
+            record = analyze_issue(
+                make_issue([(event_type, days_before(5), 'maintainer')]), ASOF, 90)
+            self.assertEqual(record.cohort, ACTIVE, event_type)
+            self.assertEqual(record.silent_days, 5, event_type)
+            self.assertEqual(record.touch_days, 5, event_type)
+
+    def test_every_passive_event_is_ignored_by_the_strict_clock(self):
+        for event_type in ('labeled', 'unlabeled', 'milestoned', 'subscribed',
+                           'unsubscribed', 'mentioned', 'cross-referenced',
+                           'referenced', 'locked'):
+            record = analyze_issue(
+                make_issue([(event_type, days_before(5), 'maintainer')]), ASOF, 90)
+            self.assertEqual(record.silent_days, 365, event_type)
+            self.assertEqual(record.touch_days, 5, event_type)
+
+    def test_comment_outranks_later_bookkeeping(self):
+        """A real reply sets the clock even when filing happened afterwards."""
+        record = analyze_issue(
+            make_issue([('commented', days_before(200), 'helper', 'Looking.'),
+                        ('labeled', days_before(3), 'maintainer')]), ASOF, 90)
+        self.assertEqual(record.cohort, WENT_QUIET)
+        self.assertEqual(record.silent_days, 200)
+        self.assertEqual(record.touch_days, 3)
+        self.assertTrue(record.touched_since)
 
     def test_unsorted_events_use_the_latest(self):
         record = analyze_issue(
@@ -146,6 +192,68 @@ class CohortTests(unittest.TestCase):
 
     def test_issue_without_any_date_is_dropped(self):
         self.assertIsNone(analyze_issue(make_issue([], created=None), ASOF, 90))
+
+
+class SweepTests(unittest.TestCase):
+    def test_busiest_touch_days_are_ranked(self):
+        records = [analyze_issue(make_issue(
+            [('labeled', days_before(5), 'maintainer')], number=n), ASOF, 90)
+            for n in range(3)]
+        records.append(analyze_issue(make_issue(
+            [('labeled', days_before(9), 'maintainer')], number=9), ASOF, 90))
+        sweeps = bookkeeping_sweeps(records)
+        self.assertEqual(sweeps[0][1], 3)
+        self.assertEqual(sweeps[0][0], (ASOF - timedelta(days=5)).date().isoformat())
+
+    def test_no_touches_gives_no_sweeps(self):
+        self.assertEqual(bookkeeping_sweeps([]), [])
+
+
+class OutputEncodingTests(unittest.TestCase):
+    """A title the stream cannot encode must not truncate the report."""
+
+    def test_report_survives_an_unencodable_title(self):
+        issue = make_issue([('commented', days_before(200), 'helper')])
+        issue.title = 'poetry fails on \u2014 em dash and \U0001f600 emoji'
+        buffer = io.TextIOWrapper(io.BytesIO(), encoding='cp1252', newline='')
+        with patch('stale_issues_analysis.config.get_parameter',
+                   side_effect=params()), \
+             patch('stale_issues_analysis.DataLoader') as loader, \
+             patch('stale_issues_analysis.plt.show'), \
+             patch('sys.stdout', buffer):
+            loader.return_value.get_issues.return_value = [anchor(), issue]
+            StaleIssuesAnalysis().run()
+            buffer.flush()
+        text = buffer.buffer.getvalue().decode('cp1252')
+        # The report ran to completion rather than dying on the title.
+        self.assertIn('silence is measured from the dataset snapshot', text)
+
+    def test_missing_reconfigure_is_not_an_error(self):
+        with patch('sys.stdout', io.StringIO()):
+            keep_output_printable()
+
+
+class ActivityInputTests(unittest.TestCase):
+    def test_defaults_to_strict(self):
+        self.assertEqual(validated_activity(None), STRICT)
+
+    def test_accepts_both_modes_in_any_casing(self):
+        self.assertEqual(validated_activity('STRICT'), STRICT)
+        self.assertEqual(validated_activity(' any '), ANY)
+
+    def test_rejects_anything_else(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertIsNone(validated_activity('sloppy'))
+        self.assertIn('--activity', output.getvalue())
+
+    def test_bad_mode_stops_before_loading_data(self):
+        with patch('stale_issues_analysis.config.get_parameter',
+                   side_effect=params(activity='sloppy')), \
+             patch('stale_issues_analysis.DataLoader') as loader:
+            with contextlib.redirect_stdout(io.StringIO()):
+                StaleIssuesAnalysis().run()
+            loader.assert_not_called()
 
 
 class BoundaryTests(unittest.TestCase):
@@ -372,6 +480,34 @@ class IntegrationTests(unittest.TestCase):
         strict, _ = run_analysis(issues, days=30)
         self.assertIn('still active 1', lenient)
         self.assertIn('went quiet 1', strict)
+
+    def test_clock_mode_is_reported(self):
+        issues = [anchor(), make_issue([])]
+        strict_out, _ = run_analysis(issues)
+        loose_out, _ = run_analysis(issues, activity=ANY)
+        self.assertIn('Clock: strict', strict_out)
+        self.assertIn('Clock: any', loose_out)
+
+    def test_bulk_relabel_is_called_out_instead_of_hiding_the_issue(self):
+        """The regression this split exists to prevent.
+
+        Three long-dead issues get relabelled on one day. The loose clock calls
+        all three active; the strict clock keeps them stale and names the day.
+        """
+        issues = [anchor()]
+        issues += [make_issue([('commented', days_before(400), 'helper'),
+                               ('labeled', days_before(7), 'maintainer')], number=n)
+                   for n in range(1, 4)]
+        strict_out, _ = run_analysis(issues)
+        loose_out, _ = run_analysis(issues, activity=ANY)
+
+        self.assertIn('Stale: 3', strict_out)
+        self.assertIn('Looks active, is not: 3', strict_out)
+        self.assertIn((ASOF - timedelta(days=7)).date().isoformat(), strict_out)
+        self.assertIn('bookkeeping only', strict_out)
+
+        self.assertIn('Stale: 0', loose_out)
+        self.assertNotIn('Looks active', loose_out)
 
     def test_snapshot_date_is_printed_for_reproducibility(self):
         issues = [make_issue([('commented', days_before(0), 'helper')])]

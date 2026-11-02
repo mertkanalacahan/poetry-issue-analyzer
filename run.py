@@ -9,7 +9,7 @@ import argparse
 
 import config
 from example_analysis import ExampleAnalysis
-from stale_issues_analysis import StaleIssuesAnalysis
+from stale_issues_analysis import ACTIVITY_MODES, StaleIssuesAnalysis
 
 
 def parse_args():
@@ -39,6 +39,13 @@ def parse_args():
     # Optional parameter for analyses focusing on a window of inactivity
     ap.add_argument('--days', '-d', type=int, required=False,
                     help='Days of inactivity after which an open issue counts as stale (feature 3, default 90)')
+
+    # Optional parameter controlling what counts as activity in the first place
+    ap.add_argument('--activity', '-a', type=str, required=False,
+                    choices=ACTIVITY_MODES,
+                    help="Which clock to judge silence by (feature 3, default strict). "
+                         "'strict' ignores labels, mentions and other bookkeeping; "
+                         "'any' counts every non-bot event.")
     
     return ap.parse_args()
 

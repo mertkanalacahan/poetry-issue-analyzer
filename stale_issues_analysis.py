@@ -3,10 +3,19 @@
 An issue is "stale" when nothing human has happened on it for N days. The clock
 is read against the dataset's own snapshot date, not today's date, so the result
 is the same whenever the analysis is re-run.
+
+Two clocks run side by side. The *substantive* clock moves only when somebody
+engages with the issue: a comment, a close, a reopen, an assignment, a retitle.
+The *touch* clock moves on any event at all, metadata included. They disagree
+more than you would expect, because one maintainer relabelling a hundred old
+issues in an afternoon moves every touch clock and not one substantive clock.
+Reporting both is the point: the gap between them is where silent issues hide.
 """
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import re
+import sys
 from textwrap import shorten
 
 import matplotlib.pyplot as plt
@@ -20,6 +29,24 @@ TOP_LABELS = 10
 WINDOW_DAYS = 90
 MAX_WINDOWS = 12
 UNLABELED = "(no label)"
+TOP_SWEEPS = 3
+
+# Bookkeeping, not engagement. Labels and milestones are filing; referenced and
+# cross-referenced are something happening on another issue; mentions and
+# subscriptions are side effects of that. None of them is a human answering the
+# person who opened the issue, so none of them moves the substantive clock.
+PASSIVE_EVENTS = frozenset({
+    "labeled", "unlabeled", "milestoned", "demilestoned",
+    "subscribed", "unsubscribed", "mentioned",
+    "cross-referenced", "referenced",
+    "locked", "unlocked", "pinned", "unpinned",
+})
+
+# How much has to happen before an issue counts as alive.
+STRICT = "strict"   # only substantive events; the default
+ANY = "any"         # any non-bot event, which is how GitHub reads "updated"
+ACTIVITY_MODES = (STRICT, ANY)
+DEFAULT_ACTIVITY = STRICT
 
 # Automated accounts keep dead issues looking alive. A stale-bot nag is not
 # attention, so bot events never reset the silence clock.
@@ -74,6 +101,8 @@ class IssueRecord:
     issue: object
     last_activity: datetime
     silent_days: int
+    last_touch: datetime
+    touch_days: int
     responders: int
     creator_comments: int
     cohort: str
@@ -83,17 +112,29 @@ class IssueRecord:
         """Author kept talking; nobody ever answered."""
         return self.cohort == NEVER_ANSWERED and self.creator_comments > 0
 
+    @property
+    def touched_since(self):
+        """Something happened after the last real activity, but it was filing."""
+        return self.touch_days < self.silent_days
 
-def analyze_issue(issue, asof, days):
+
+def analyze_issue(issue, asof, days, activity=DEFAULT_ACTIVITY):
     """Measure one open issue's silence and place it in a cohort.
 
-    Activity means any non-bot event, which is what "no comments or updates"
-    means on GitHub: a label or an assignment is somebody touching the issue.
-    A reply, however, only counts as an answer when it comes from someone other
-    than the author.
+    Both clocks start at the opening date, because filing the issue is itself
+    somebody doing something. From there the touch clock moves on any non-bot
+    event, while the substantive clock moves only on events outside
+    PASSIVE_EVENTS. Under the default strict mode the cohorts are drawn from
+    the substantive clock, so a bulk relabel cannot pass for attention;
+    activity="any" collapses the two and restores GitHub's looser reading.
+
+    A reply only counts as an *answer* when it comes from someone other than
+    the author, in either mode.
     """
     creator = (issue.creator or "").casefold()
-    last_activity = as_utc(issue.created_date)
+    opened = as_utc(issue.created_date)
+    last_touch = opened
+    last_substantive = opened
     responders = set()
     creator_comments = 0
 
@@ -101,8 +142,12 @@ def analyze_issue(issue, asof, days):
         if is_bot(event.author):
             continue
         when = as_utc(event.event_date)
-        if when is not None and (last_activity is None or when > last_activity):
-            last_activity = when
+        if when is not None:
+            if last_touch is None or when > last_touch:
+                last_touch = when
+            if (event.event_type not in PASSIVE_EVENTS
+                    and (last_substantive is None or when > last_substantive)):
+                last_substantive = when
         if event.event_type != "commented":
             continue
         author = (event.author or "").casefold()
@@ -113,18 +158,31 @@ def analyze_issue(issue, asof, days):
         else:
             responders.add(author)
 
-    if last_activity is None:
+    last_activity = last_touch if activity == ANY else last_substantive
+    if last_activity is None or last_touch is None:
         return None
 
     silent_days = max((asof - last_activity).days, 0)
+    touch_days = max((asof - last_touch).days, 0)
     if silent_days < days:
         cohort = ACTIVE
     elif responders:
         cohort = WENT_QUIET
     else:
         cohort = NEVER_ANSWERED
-    return IssueRecord(issue, last_activity, silent_days, len(responders),
-                       creator_comments, cohort)
+    return IssueRecord(issue, last_activity, silent_days, last_touch, touch_days,
+                       len(responders), creator_comments, cohort)
+
+
+def bookkeeping_sweeps(masked, top=TOP_SWEEPS):
+    """Days when many silent issues were touched but still not answered.
+
+    A maintainer working through a backlog of labels in one afternoon shows up
+    here as a single date against a large count. That is worth naming in the
+    output: it is the reason the strict and loose readings disagree at all.
+    """
+    tally = Counter(record.last_touch.date().isoformat() for record in masked)
+    return tally.most_common(top)
 
 
 def label_breakdown(records, top=TOP_LABELS):
@@ -181,6 +239,35 @@ def validated_days(value):
     return days
 
 
+def keep_output_printable():
+    """Survive an issue title the output stream cannot encode.
+
+    Poetry titles carry emoji and typographic dashes. Piping this report on
+    Windows hands us a cp1252 stream, where the first such title raises
+    mid-print and truncates the analysis with no error anyone can see.
+    Substituting that one glyph costs a character; raising costs the rest of
+    the report.
+    """
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is None:
+        return
+    try:
+        reconfigure(errors="replace")
+    except (ValueError, OSError):
+        pass
+
+
+def validated_activity(value):
+    """Accept the --activity input or explain the problem instead of crashing."""
+    if value is None:
+        return DEFAULT_ACTIVITY
+    mode = str(value).strip().casefold()
+    if mode not in ACTIVITY_MODES:
+        print(f"--activity must be one of {', '.join(ACTIVITY_MODES)}, got {value!r}.")
+        return None
+    return mode
+
+
 def _style(axis):
     axis.set_axisbelow(True)
     axis.tick_params(colors=INK_MUTED, length=0, labelsize=9)
@@ -188,7 +275,7 @@ def _style(axis):
         spine.set_visible(False)
 
 
-def draw_charts(records, ranked, days, asof):
+def draw_charts(records, ranked, days, asof, activity=DEFAULT_ACTIVITY):
     """Panel 1: who gets ignored. Panel 2: how long the silence runs."""
     figure, (label_ax, timing_ax) = plt.subplots(1, 2, figsize=(14.5, 6.4))
     figure.patch.set_facecolor(SURFACE)
@@ -247,9 +334,11 @@ def draw_charts(records, ranked, days, asof):
     figure.legend(handles, names, loc="upper center", ncol=len(COHORTS),
                   frameon=False, bbox_to_anchor=(0.5, 0.945),
                   labelcolor=INK_MUTED, fontsize=9)
+    clock = ("Labels, mentions and cross-references do not count as activity"
+             if activity == STRICT else "Any non-bot event counts as activity")
     figure.text(0.5, 0.015,
                 f"Measured against the dataset snapshot of {asof.date().isoformat()}, "
-                "not today. Bot events are ignored. Open issues only.",
+                f"not today. {clock}. Bot events are ignored. Open issues only.",
                 ha="center", fontsize=9, color=INK_MUTED)
     figure.tight_layout(rect=[0, 0.05, 1, 0.9])
     plt.show()
@@ -261,10 +350,15 @@ class StaleIssuesAnalysis:
     def __init__(self):
         self.days = config.get_parameter("days", DEFAULT_DAYS)
         self.label = config.get_parameter("label")
+        self.activity = config.get_parameter("activity", DEFAULT_ACTIVITY)
 
     def run(self):
+        keep_output_printable()
         days = validated_days(self.days)
         if days is None:
+            return
+        activity = validated_activity(self.activity)
+        if activity is None:
             return
 
         issues = DataLoader().get_issues()
@@ -283,7 +377,8 @@ class StaleIssuesAnalysis:
             return
 
         records = [record for record in
-                   (analyze_issue(issue, asof, days) for issue in open_issues)
+                   (analyze_issue(issue, asof, days, activity)
+                    for issue in open_issues)
                    if record is not None]
         if not records:
             print("No open issues carry a usable date.")
@@ -295,19 +390,45 @@ class StaleIssuesAnalysis:
         monologues = [record for record in ignored if record.is_monologue]
         total = len(records)
 
+        masked = [record for record in stale if record.touch_days < days]
+
         print(f"\nSTALE OPEN ISSUES | silent {days}+ days | {self.label or 'all labels'}")
         print("Question: Which open issues have gone silent, and were they ignored "
               "outright or abandoned mid-discussion?")
-        print("Method: Measure days since the last non-bot event against the dataset "
-              "snapshot, then split")
-        print("        stale issues by whether anyone other than the author ever replied.")
+        print("Method: Measure days since the last qualifying non-bot event against the "
+              "dataset snapshot,")
+        print("        then split stale issues by whether anyone other than the author "
+              "ever replied.")
         print(f"Snapshot: {asof.date().isoformat()} | {total:,} open issues analyzed")
+        print(f"Clock: {activity}", end="")
+        if activity == STRICT:
+            print(" - labels, milestones, mentions, subscriptions and cross-references")
+            print("       do not count as activity. Pass --activity any to count every "
+                  "non-bot event.")
+        else:
+            print(" - every non-bot event counts, labels and mentions included.")
+            print("       This is GitHub's own reading of an issue being updated, and it "
+                  "lets a bulk")
+            print("       relabel hide silence. Pass --activity strict for the stricter "
+                  "reading.")
         print(f"Stale: {len(stale):,} ({len(stale) / total * 100:.1f}%) | "
               f"never answered {len(ignored):,} | went quiet {len(quiet):,} | "
               f"still active {total - len(stale):,}")
         if ignored:
             print(f"Of the never-answered, {len(monologues):,} are monologues: the author "
                   "kept commenting and nobody replied.")
+
+        if masked:
+            print(f"\nLooks active, is not: {len(masked):,} of the {len(stale):,} stale "
+                  f"issues were touched inside the")
+            print(f"{days}-day window, but only by bookkeeping - nobody replied. On the "
+                  "loose clock every one")
+            print("of these would read as active.")
+            sweeps = [row for row in bookkeeping_sweeps(masked) if row[1] > 1]
+            if sweeps:
+                print("Busiest such days, which is what bulk triage looks like:")
+                for date_text, count in sweeps:
+                    print(f"  {date_text}  {count:,} silent issues touched")
 
         ranked = label_breakdown(records)
         print(f"\nNever-answered share by label (top {len(ranked)} by open volume):")
@@ -330,6 +451,9 @@ class StaleIssuesAnalysis:
                   f"silent {record.silent_days:,}d | author {issue.creator or '(unknown)'}"
                   + (f" | {record.creator_comments} self-comment(s)"
                      if record.creator_comments else ""))
+            if record.touched_since:
+                print(f"    Last touched {record.last_touch.date().isoformat()} "
+                      f"({record.touch_days:,}d ago), bookkeeping only")
             print(f"    {issue.url or '(no URL)'}")
 
         print("\nLongest-abandoned discussions (went quiet, top 5):")
@@ -342,8 +466,11 @@ class StaleIssuesAnalysis:
             print(f"  #{issue.number}: {title}")
             print(f"    Last activity {record.last_activity.date().isoformat()} | "
                   f"silent {record.silent_days:,}d | {record.responders} responder(s)")
+            if record.touched_since:
+                print(f"    Last touched {record.last_touch.date().isoformat()} "
+                      f"({record.touch_days:,}d ago), bookkeeping only")
             print(f"    {issue.url or '(no URL)'}")
 
         print("\nNote: silence is measured from the dataset snapshot, not today. "
               "An unanswered issue is not\nnecessarily an ignored one; some need no reply.")
-        draw_charts(records, ranked, days, asof)
+        draw_charts(records, ranked, days, asof, activity)

@@ -60,6 +60,19 @@ For every open issue, the program finds the most recent non-bot event and measur
 ago that was. Bot activity is ignored on purpose: a stale-bot reminder makes a dead issue look
 alive, which is exactly what we are trying to detect.
 
+Two clocks are kept, because "somebody touched this issue" and "somebody answered this issue"
+are different things. The **substantive** clock moves only on events where a person engaged:
+a comment, a close, a reopen, an assignment, a retitle. The **touch** clock moves on any
+non-bot event at all, metadata included. Both start at the opening date, since filing the
+issue is itself somebody doing something.
+
+The substantive clock is the default, and the difference is not academic. In this dataset one
+maintainer relabelled 83 open issues on 2024-10-13, a week before the data was exported. On
+the touch clock all 83 look freshly active; on the substantive clock 54 of them are still
+silent, several for over a year. Counting that sweep as attention takes the stale share from
+61% down to 26% and the never-answered count from 21 down to 3 - so the looser reading does
+not merely blur the result, it reverses it.
+
 Time is measured against the **dataset's own snapshot date** (the latest timestamp anywhere in
 the data file), not against today's date. The data file is a frozen export, so using today
 would mark every open issue stale and make the `--days` input meaningless.
@@ -86,10 +99,20 @@ An optional label filter narrows the analysis to one part of the project:
 python run.py --feature 3 --days 180 --label kind/bug
 ```
 
+To judge silence the way GitHub's own "updated" timestamp does, counting every non-bot event
+including labels and mentions, switch clocks:
+
+```bash
+python run.py --feature 3 --activity any
+```
+
 ### What it shows
 
-The console prints the snapshot date used, how many open issues are stale, and the split
-between never-answered and went-quiet. It then lists the never-answered share for the busiest
+The console prints the snapshot date used, which clock is in force, how many open issues are
+stale, and the split between never-answered and went-quiet. It then reports how many stale
+issues were touched inside the window by bookkeeping alone - the ones that would read as
+active on the looser clock - and names the days those touches cluster on, which is what bulk
+triage looks like from the outside. It then lists the never-answered share for the busiest
 labels, the longest-ignored issues, and the longest-abandoned discussions, each with issue
 numbers, dates, and GitHub links. It also counts "monologues" - issues where the author kept
 commenting and nobody ever replied.
@@ -104,6 +127,9 @@ Silence is not the same as neglect. Some issues need no reply, some are tracked 
 some were quietly fixed without anyone closing them. The results point at where attention has
 not been going, not at who is at fault.
 
-Activity counts any non-bot event, so a drive-by label change resets the clock even though no
-human actually answered. The bot list covers the common automation accounts and may miss a
-project-specific one.
+Which events count as substantive is a judgement call, not a fact. A retitle is treated as
+engagement and a label is not, and reasonable people would draw that line elsewhere; both
+readings are available through `--activity` so the choice is visible rather than buried.
+The bot list covers the common automation accounts and may miss a project-specific one - and
+note that a human doing bulk automation-like work, as happened here on 2024-10-13, is not a
+bot and should not be filtered as one. Separating the two clocks is what handles that case.
