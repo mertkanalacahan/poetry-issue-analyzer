@@ -81,3 +81,39 @@ Two charts show how many reporting accounts each flagged issue has and how long 
 The program looks for common ways people describe problems, so it can miss unusual wording or mistake unrelated comments for genuine reports. A comment posted after closure also doesn't necessarily mean the problem first occurred after closure.
 
 The results are meant to help maintainers find issues worth investigating, not automatically determine whether a bug is still present.
+
+## Feature 2: Developer Response Time
+
+How long does a new issue wait before someone from the Poetry team replies to it? This feature measures the time from when each issue was created to the first comment from a developer, and finds the issues that never got a developer reply at all.
+
+This is different from Feature 3 (stale open issues): Feature 3 looks at whether *anyone* is still active on *open* issues, while this feature looks at *developer* replies across *all* issues, open and closed.
+
+### How it works
+
+The data file has no field saying who is a maintainer, so developers are inferred from their actions. Anyone who labeled, closed, reopened, assigned, milestoned or locked an issue **that someone else created** counts as a developer. Actions on a person's own issue are ignored, because Poetry's issue templates add labels like `status/triage` under the creator's name and anyone can close their own issue. Counting those would wrongly mark hundreds of ordinary users as developers. Bot accounts are ignored too.
+
+For each issue, the program finds the earliest comment by a developer other than the issue's creator and measures the wait. Issues without one are counted as never answered, and their waiting time is measured up to the dataset's snapshot date (the latest timestamp in the file) so results are the same no matter when the program is run.
+
+### How to run it
+
+```bash
+python run.py --feature 2
+```
+
+To analyze only issues with a particular label:
+
+```bash
+python run.py --feature 2 --label kind/bug
+```
+
+Developers are always inferred from all issues, so filtering by label does not change who counts as a developer.
+
+### What it shows
+
+The console prints the number of developers found, how many issues were answered or never answered, the median, mean and 90th-percentile time to first reply, and the share answered within 1, 7 and 30 days. It also lists the slowest first replies, the open issues that have waited longest without a developer reply (measured up to the dataset's snapshot date), and which developers most often replied first, each with issue numbers and GitHub links. Closed issues are left out of the waiting list because they are no longer waiting for a reply; they are still counted in the "closed without a developer comment" total.
+
+Two charts accompany the output: a distribution of time to first developer reply with a separate bar for issues that were never answered, and a per-label breakdown showing what share of each common label was answered within 7 days, answered later, or never answered.
+
+### Limitations
+
+Developer detection is an inference. A maintainer who never labels, closes or assigns other people's issues will not be detected, and an outside contributor with triage access will be counted as a developer. Replies made somewhere else, such as in a pull request or on Discord, are not visible in this data. Issues closed without a comment (for example as duplicates) count as never answered, even though a developer did act on them.
