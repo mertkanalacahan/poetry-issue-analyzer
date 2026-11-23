@@ -1,0 +1,99 @@
+======================================================================
+FAIL: test_reply_after_issue_was_closed_is_not_a_first_response (tests.test_team5_developer_response_time.AnalyzeIssueTests.test_reply_after_issue_was_closed_is_not_a_first_response)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/claude/m3/poetry-issue-analyzer-team5-tests/tests/test_team5_developer_response_time.py", line 55, in test_reply_after_issue_was_closed_is_not_a_first_response
+    self.assertNotEqual(
+    ~~~~~~~~~~~~~~~~~~~^
+        record.status, drt.ANSWERED,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        f"a reply posted after closure was counted as a {record.days:.0f}-day first response")
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'answered' == 'answered' : a reply posted after closure was counted as a 366-day first response
+
+======================================================================
+FAIL: test_invalid_feature_number_is_reported_as_an_error (tests.test_team5_run_and_config.RunPyTests.test_invalid_feature_number_is_reported_as_an_error)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/claude/m3/poetry-issue-analyzer-team5-tests/tests/test_team5_run_and_config.py", line 70, in test_invalid_feature_number_is_reported_as_an_error
+    self.assertNotEqual(result.returncode, 0,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+                        "an invalid --feature value exits as if it succeeded")
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 0 == 0 : an invalid --feature value exits as if it succeeded
+
+======================================================================
+FAIL: test_missing_data_file_gives_a_clear_message (tests.test_team5_run_and_config.RunPyTests.test_missing_data_file_gives_a_clear_message)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/claude/m3/poetry-issue-analyzer-team5-tests/tests/test_team5_run_and_config.py", line 64, in test_missing_data_file_gives_a_clear_message
+    self.assertNotIn("Traceback", result.stderr,
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                     "missing data file crashed with a traceback")
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'Traceback' unexpectedly found in 'Traceback (most recent call last):\n  File "/home/claude/m3/poetry-issue-analyzer-team5-tests/run.py", line 66, in <module>\n    DeveloperResponseAnalysis().run()\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File "/home/claude/m3/poetry-issue-analyzer-team5-tests/developer_response_time.py", line 229, in run\n    all_issues = DataLoader().get_issues()\n  File "/home/claude/m3/poetry-issue-analyzer-team5-tests/data_loader.py", line 29, in get_issues\n    _ISSUES = self._load()\n  File "/home/claude/m3/poetry-issue-analyzer-team5-tests/data_loader.py", line 37, in _load\n    with open(self.data_path,\'r\') as fin:\n         ~~~~^^^^^^^^^^^^^^^^^^^^\nFileNotFoundError: [Errno 2] No such file or directory: \'/tmp/tmptoa38sis/missing.json\'\n' : missing data file crashed with a traceback
+
+======================================================================
+FAIL: test_mixed_naive_and_aware_dates_do_not_crash (tests.test_team5_same_problem_reports.AnalyzeIssueTests.test_mixed_naive_and_aware_dates_do_not_crash)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/claude/m3/poetry-issue-analyzer-team5-tests/tests/test_team5_same_problem_reports.py", line 74, in test_mixed_naive_and_aware_dates_do_not_crash
+    spr.analyze_issue(i)
+    ~~~~~~~~~~~~~~~~~^^^
+  File "/home/claude/m3/poetry-issue-analyzer-team5-tests/same_problem_reports.py", line 220, in analyze_issue
+    if closure and event.event_date > closure:
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: can't compare offset-naive and offset-aware datetimes
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/claude/m3/poetry-issue-analyzer-team5-tests/tests/test_team5_same_problem_reports.py", line 76, in test_mixed_naive_and_aware_dates_do_not_crash
+    self.fail(f"analyze_issue crashed on mixed timezones: {error}")
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: analyze_issue crashed on mixed timezones: can't compare offset-naive and offset-aware datetimes
+
+======================================================================
+FAIL: test_plus_one_style_report_is_detected (tests.test_team5_same_problem_reports.ClassifyCommentTests.test_plus_one_style_report_is_detected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/claude/m3/poetry-issue-analyzer-team5-tests/tests/test_team5_same_problem_reports.py", line 37, in test_plus_one_style_report_is_detected
+    self.assertIsNotNone(spr.classify_comment("+1, same problem on macOS"))
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: unexpectedly None
+
+======================================================================
+FAIL: test_label_filter_with_unlabeled_issue_does_not_crash (tests.test_team5_same_problem_reports.RunTests.test_label_filter_with_unlabeled_issue_does_not_crash)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/claude/m3/poetry-issue-analyzer-team5-tests/tests/test_team5_same_problem_reports.py", line 112, in test_label_filter_with_unlabeled_issue_does_not_crash
+    text = self.run_analysis([i], label="kind/bug")
+  File "/home/claude/m3/poetry-issue-analyzer-team5-tests/tests/test_team5_same_problem_reports.py", line 95, in run_analysis
+    spr.SameProblemReportsAnalysis().run()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/claude/m3/poetry-issue-analyzer-team5-tests/same_problem_reports.py", line 251, in run
+    issues = [issue for issue in issues if self.label in issue.labels]
+                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: argument of type 'NoneType' is not iterable
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/claude/m3/poetry-issue-analyzer-team5-tests/tests/test_team5_same_problem_reports.py", line 114, in test_label_filter_with_unlabeled_issue_does_not_crash
+    self.fail(f"--label crashed on an issue with labels=None: {error}")
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: --label crashed on an issue with labels=None: argument of type 'NoneType' is not iterable
+
+======================================================================
+FAIL: test_mode_named_in_readme_is_accepted (tests.test_team5_stale_issues_analysis.InputValidationTests.test_mode_named_in_readme_is_accepted)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/claude/m3/poetry-issue-analyzer-team5-tests/tests/test_team5_stale_issues_analysis.py", line 66, in test_mode_named_in_readme_is_accepted
+    self.assertIsNotNone(sia.validated_activity("substantive"))
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: unexpectedly None
+
+----------------------------------------------------------------------
+Ran 183 tests in 4.214s
+
+FAILED (failures=7)
